@@ -64,7 +64,7 @@ if __name__ == "__main__":
         "CREATE_DATA": False,  # Creating new dataset
         "LOAD_DATA": True,  # Loading data from exist dataset
         "LOAD_MODEL": True,  # Load specific model for training
-        "TRAIN_MODEL": True,  # Applying training operation
+        "TRAIN_MODEL": False,  # Applying training operation
         "SAVE_MODEL": False,  # Saving tuned model
         "EVALUATE_MODE": True,  # Evaluating desired algorithms
     }
@@ -259,3 +259,5 @@ if __name__ == "__main__":
         )
     plt.show()
     print("end")
+
+# GitHub test
