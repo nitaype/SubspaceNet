@@ -99,7 +99,7 @@ class ModelGenerator(object):
             ValueError: If the diff_method is not defined for SubspaceNet model.
         """
         if self.model_type.startswith("SubspaceNet"):
-            if diff_method not in ["esprit", "root_music"]:
+            if diff_method not in ["esprit", "root_music", "mvdr"]:
                 raise ValueError(
                     f"ModelParams.set_diff_method: {diff_method} is not defined for SubspaceNet model"
                 )
@@ -281,7 +281,7 @@ class SubspaceNet(nn.Module):
 
     """
 
-    def __init__(self, tau: int, M: int, diff_method: str = "root_music"):
+    def __init__(self, tau: int, M: int, diff_method: str = "mvdr"):
         """Initializes the SubspaceNet model.
 
         Args:
@@ -320,6 +320,8 @@ class SubspaceNet(nn.Module):
             self.diff_method = root_music
         elif diff_method.startswith("esprit"):
             self.diff_method = esprit
+        elif diff_method.startswith("mvdr"):
+            self.diff_method = mvdr
         else:
             raise Exception(
                 f"SubspaceNet.set_diff_method: Method {diff_method} is not defined for SubspaceNet"
@@ -339,7 +341,7 @@ class SubspaceNet(nn.Module):
         """
         return torch.cat((self.ReLU(X), self.ReLU(-X)), 1)
 
-    def forward(self, Rx_tau: torch.Tensor):
+    def forward(self, X: torch.Tensor, Rx_tau: torch.Tensor, A: torch.Tensor):
         """
         Performs the forward pass of the SubspaceNet.
 
@@ -388,15 +390,8 @@ class SubspaceNet(nn.Module):
             Kx=Kx_tag, eps=1, batch_size=self.batch_size
         )  # Shape: [Batch size, N, N]
         # Feed surrogate covariance to the differentiable subspace algorithm
-        method_output = self.diff_method(Rz, self.M, self.batch_size)
-        if isinstance(method_output, tuple):
-            # Root MUSIC output
-            doa_prediction, doa_all_predictions, roots = method_output
-        else:
-            # Esprit output
-            doa_prediction = method_output
-            doa_all_predictions, roots = None, None
-        return doa_prediction, doa_all_predictions, roots, Rz
+        enhanced = self.diff_method(X, Rz, A)
+        return enhanced
 
 
 class SubspaceNetEsprit(SubspaceNet):
@@ -794,3 +789,40 @@ def esprit(Rz: torch.Tensor, M: int, batch_size: int):
         doa_batches.append(doa_predictions)
 
     return torch.stack(doa_batches, dim=0)
+
+def mvdr(signals: torch.Tensor,
+                           covariances: torch.Tensor,
+                           steering_vectors: torch.Tensor) -> torch.Tensor:
+    """
+    Apply MVDR beamforming on a batch of narrowband signals.
+    
+    Args:
+        signals: Tensor of shape (B, C, T) - narrowband multichannel time-domain signals
+        covariances: Tensor of shape (B, C, C) - spatial covariance matrices
+        steering_vectors: Tensor of shape (B, C, 1) - steering vectors toward desired DoA
+    
+    Returns:
+        Tensor of shape (B, T) - beamformed signals
+    """
+    B, C, T = signals.shape
+    signals = signals.to(torch.complex64)
+    covariances = covariances.to(torch.complex64)
+    steering_vectors = steering_vectors.to(torch.complex64)  # (B, C, 1)
+    
+    # Invert covariance matrices (B, C, C)
+    R_inv = torch.linalg.pinv(covariances)
+
+    # Compute numerator: (B, C, 1)
+    R_inv_a = torch.bmm(R_inv, steering_vectors)
+
+    # Compute denominator: (B, 1, 1)
+    denom = torch.bmm(steering_vectors.conj().transpose(1, 2), R_inv_a)
+    denom = denom.real  # Ensure real-valued denominator
+
+    # MVDR weights: (B, C, 1)
+    w = R_inv_a / denom
+
+    # Apply beamforming: output shape (B, T)
+    y = torch.sum(w.conj().transpose(1, 2) @ signals, dim=1)
+
+    return y  # Or `.abs()` or `.real + 0j` depending on use case

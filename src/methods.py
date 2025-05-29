@@ -53,6 +53,7 @@ import scipy
 from src.models import SubspaceNet
 from src.system_model import SystemModel
 from src.utils import sum_of_diag, find_roots, R2D
+import torch
 
 
 class SubspaceMethod(object):

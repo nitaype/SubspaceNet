@@ -43,7 +43,7 @@ plt.close("all")
 if __name__ == "__main__":
     # Initialize paths
     external_data_path = Path.cwd() / "data"
-    scenario_data_path = "uniform_bias_spacing"
+    scenario_data_path = "diff_root_music"
     datasets_path = external_data_path / "datasets" / scenario_data_path
     simulations_path = external_data_path / "simulations"
     saving_path = external_data_path / "weights"
@@ -61,12 +61,12 @@ if __name__ == "__main__":
     # Operations commands
     commands = {
         "SAVE_TO_FILE": True,  # Saving results to file or present them over CMD
-        "CREATE_DATA": False,  # Creating new dataset
-        "LOAD_DATA": True,  # Loading data from exist dataset
-        "LOAD_MODEL": True,  # Load specific model for training
-        "TRAIN_MODEL": False,  # Applying training operation
-        "SAVE_MODEL": False,  # Saving tuned model
-        "EVALUATE_MODE": True,  # Evaluating desired algorithms
+        "CREATE_DATA": True,  # Creating new dataset
+        "LOAD_DATA": False,  # Loading data from exist dataset
+        "LOAD_MODEL": False,  # Load specific model for training
+        "TRAIN_MODEL": True,  # Applying training operation
+        "SAVE_MODEL": True,  # Saving tuned model
+        "EVALUATE_MODE": False,  # Evaluating desired algorithms
     }
     # Saving simulation scores to external file
     if commands["SAVE_TO_FILE"]:
@@ -78,25 +78,25 @@ if __name__ == "__main__":
     system_model_params = (
         SystemModelParams()
         .set_parameter("N", 8)
-        .set_parameter("M", 3)
-        .set_parameter("T", 200)
+        .set_parameter("M", 5)
+        .set_parameter("T", 100)
         .set_parameter("snr", 10)
         .set_parameter("signal_type", "NarrowBand")
         .set_parameter("signal_nature", "non-coherent")
         .set_parameter("eta", 0)
-        .set_parameter("bias", 0.05)
+        .set_parameter("bias", 0)
         .set_parameter("sv_noise_var", 0)
     )
     # Generate model configuration
     model_config = (
         ModelGenerator()
         .set_model_type("SubspaceNet")
-        .set_diff_method("esprit")
+        .set_diff_method("root_music")
         .set_tau(8)
         .set_model(system_model_params)
     )
     # Define samples size
-    samples_size = 100000  # Overall dateset size
+    samples_size = 1000  # Overall dateset size
     train_test_ratio = 0.05  # training and testing datasets ratio
     # Sets simulation filename
     simulation_filename = get_simulation_filename(
@@ -160,12 +160,12 @@ if __name__ == "__main__":
         # Assign the training parameters object
         simulation_parameters = (
             TrainingParams()
-            .set_batch_size(2048)
-            .set_epochs(80)
+            .set_batch_size(8)
+            .set_epochs(10)
             .set_model(model=model_config)
             .set_optimizer(optimizer="Adam", learning_rate=0.00001, weight_decay=1e-9)
             .set_training_dataset(train_dataset)
-            .set_schedular(step_size=80, gamma=0.2)
+            .set_schedular(step_size=10, gamma=0.2)
             .set_criterion()
         )
         if commands["LOAD_MODEL"]:
