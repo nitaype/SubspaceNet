@@ -47,6 +47,7 @@ from src.criterions import *
 from src.system_model import SystemModel, SystemModelParams
 from src.models import SubspaceNet, DeepCNN, DeepAugmentedMUSIC, ModelGenerator
 from src.evaluation import evaluate_dnn_model
+import wandb
 
 class TrainingParams(object):
     """
@@ -390,6 +391,7 @@ def train_model(training_params: TrainingParams, model_name: str, checkpoint_pat
                     DOA_predictions.float(), DOA.float()
                 )
             else:
+                # print(s.shape, filtered_signal.shape)
                 train_loss = training_params.criterion(filtered_signal, s)
             # Back-propagation stage
             try:
@@ -426,6 +428,7 @@ def train_model(training_params: TrainingParams, model_name: str, checkpoint_pat
                 epoch + 1, training_params.epochs, overall_train_loss, valid_loss
             )
         )
+        wandb.log({"epoch": epoch, "train_loss": overall_train_loss, "val_loss": valid_loss})
         print("lr {}".format(training_params.optimizer.param_groups[0]["lr"]))
         # Save best model weights for early stoppings
         if min_valid_loss > valid_loss:

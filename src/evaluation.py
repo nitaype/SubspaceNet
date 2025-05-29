@@ -74,13 +74,16 @@ def evaluate_dnn_model(
     # Gradients calculation isn't required for evaluation
     with torch.no_grad():
         for data in dataset:
-            X, DOA = data
+            X, s, Rx, DOA, A = data
             test_length += DOA.shape[0]
             # Convert observations and DoA to device
             X = X.to(device)
+            s = s.to(device)
+            Rx = Rx.to(device)
+            A = A.to(device)
             DOA = DOA.to(device)
             # Get model output
-            model_output = model(X)
+            model_output = model(X, Rx, A)
             if model_type.startswith("DA-MUSIC"):
                 # Deep Augmented MUSIC
                 DOA_predictions = model_output
@@ -103,7 +106,7 @@ def evaluate_dnn_model(
                     )
             elif model_type.startswith("SubspaceNet"):
                 # Default - SubSpaceNet
-                DOA_predictions = model_output[0]
+                filtered_signal = model_output
             else:
                 raise Exception(
                     f"evaluate_dnn_model: Model type {model_type} is not defined"
@@ -112,21 +115,21 @@ def evaluate_dnn_model(
             if model_type.startswith("DeepCNN") and isinstance(criterion, RMSPELoss):
                 eval_loss = criterion(DOA_predictions.float(), DOA.float())
             else:
-                eval_loss = criterion(DOA_predictions, DOA)
+                eval_loss = criterion(filtered_signal, s)
             # add the batch evaluation loss to epoch loss
             overall_loss += eval_loss.item()
         overall_loss = overall_loss / test_length
     # Plot spectrum for SubspaceNet model
-    if plot_spec and model_type.startswith("SubspaceNet"):
-        DOA_all = model_output[1]
-        roots = model_output[2]
-        plot_spectrum(
-            predictions=DOA_all * R2D,
-            true_DOA=DOA[0] * R2D,
-            roots=roots,
-            algorithm="SubNet+R-MUSIC",
-            figures=figures,
-        )
+    # if plot_spec and model_type.startswith("SubspaceNet"):
+    #     DOA_all = model_output[1]
+    #     roots = model_output[2]
+    #     plot_spectrum(
+    #         predictions=DOA_all * R2D,
+    #         true_DOA=DOA[0] * R2D,
+    #         roots=roots,
+    #         algorithm="SubNet+R-MUSIC",
+    #         figures=figures,
+    #     )
     return overall_loss
 
 

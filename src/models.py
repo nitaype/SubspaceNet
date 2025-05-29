@@ -808,19 +808,19 @@ def mvdr(signals: torch.Tensor,
     signals = signals.to(torch.complex64)
     covariances = covariances.to(torch.complex64)
     steering_vectors = steering_vectors.to(torch.complex64)  # (B, C, 1)
-    print(f"signals shape: {signals.shape}, covariances shape: {covariances.shape}, steering_vectors shape: {steering_vectors.shape}")
+    # print(f"signals shape: {signals.shape}, covariances shape: {covariances.shape}, steering_vectors shape: {steering_vectors.shape}")
     
     # Invert covariance matrices (B, C, C)
     R_inv = torch.linalg.pinv(covariances)
 
     # Compute numerator: (B, C, 1)
     R_inv_a = torch.bmm(R_inv, steering_vectors)
-    print(f"R_inv_a shape: {R_inv_a.shape}")
+    # print(f"R_inv_a shape: {R_inv_a.shape}")
 
     # Compute denominator: (B, 1, 1)
     denom = torch.bmm(steering_vectors.conj().transpose(1, 2), R_inv_a)
     denom = denom.real  # Ensure real-valued denominator
-    print(f"denom shape: {denom.shape}")
+    # print(f"denom shape: {denom.shape}")
 
     # MVDR weights: (B, C, 1)
     w = R_inv_a / denom
