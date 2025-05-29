@@ -60,7 +60,7 @@ if __name__ == "__main__":
     dt_string_for_save = now.strftime("%d_%m_%Y_%H_%M")
     # Operations commands
     commands = {
-        "SAVE_TO_FILE": True,  # Saving results to file or present them over CMD
+        "SAVE_TO_FILE": False,  # Saving results to file or present them over CMD
         "CREATE_DATA": True,  # Creating new dataset
         "LOAD_DATA": False,  # Loading data from exist dataset
         "LOAD_MODEL": False,  # Load specific model for training
@@ -91,7 +91,7 @@ if __name__ == "__main__":
     model_config = (
         ModelGenerator()
         .set_model_type("SubspaceNet")
-        .set_diff_method("root_music")
+        .set_diff_method("mvdr")
         .set_tau(8)
         .set_model(system_model_params)
     )

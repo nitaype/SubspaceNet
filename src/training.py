@@ -255,7 +255,7 @@ class TrainingParams(object):
         if self.model_type.startswith("DeepCNN"):
             self.criterion = nn.BCELoss()
         else:
-            self.criterion = RMSPELoss()
+            self.criterion = CSISNRLoss()
         return self
 
     def set_training_dataset(self, train_dataset: list):
@@ -380,7 +380,7 @@ def train_model(training_params: TrainingParams, model_name: str, checkpoint_pat
             model_output = model(x, Rx, A)
             if training_params.model_type.startswith("SubspaceNet"):
                 # Default - SubSpaceNet
-                DOA_predictions = model_output[0]
+                filtered_signal = model_output
             else:
                 # Deep Augmented MUSIC or DeepCNN
                 DOA_predictions = model_output
@@ -390,7 +390,7 @@ def train_model(training_params: TrainingParams, model_name: str, checkpoint_pat
                     DOA_predictions.float(), DOA.float()
                 )
             else:
-                train_loss = training_params.criterion(DOA_predictions, DOA)
+                train_loss = training_params.criterion(filtered_signal, s)
             # Back-propagation stage
             try:
                 train_loss.backward()
