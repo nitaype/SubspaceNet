@@ -115,9 +115,9 @@ def create_dataset(
                 dtype=torch.complex64,
             )
             A = torch.tensor(
-                A,
+                A[:, 0],
                 dtype=torch.complex64,
-            )
+            ).unsqueeze(-1)
             if model_type.startswith("SubspaceNet"):
                 # Generate auto-correlation tensor
                 X_model = create_autocorrelation_tensor(X, tau).to(torch.float)
