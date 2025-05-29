@@ -34,6 +34,7 @@ from src.evaluation import evaluate
 from src.plotting import initialize_figures
 from pathlib import Path
 from src.models import ModelGenerator
+import wandb
 
 # Initialization
 warnings.simplefilter("ignore")
@@ -43,7 +44,7 @@ plt.close("all")
 if __name__ == "__main__":
     # Initialize paths
     external_data_path = Path.cwd() / "data"
-    scenario_data_path = "diff_root_music"
+    scenario_data_path = "diff_mvdr"
     datasets_path = external_data_path / "datasets" / scenario_data_path
     simulations_path = external_data_path / "simulations"
     saving_path = external_data_path / "weights"
@@ -178,6 +179,23 @@ if __name__ == "__main__":
             model_type=model_config.model_type,
             parameters=simulation_parameters,
             phase="training",
+        )
+        # Initialize W&B for experiment tracking
+        wandb.init(
+            project="SubspaceNet",                     # Your W&B project name
+            name=simulation_filename,                  # Unique run name
+            config={
+                "batch_size": 8,
+                "epochs": 20,
+                "learning_rate": 0.00001,
+                "weight_decay": 1e-9,
+                "snr": system_model_params.snr,
+                "model_type": model_config.model_type,
+                "diff_method": model_config.diff_method,
+                "N": system_model_params.N,
+                "M": system_model_params.M,
+                "T": system_model_params.T,
+            }
         )
         # Perform simulation training and evaluation stages
         model, loss_train_list, loss_valid_list = train(
