@@ -48,7 +48,6 @@ from src.system_model import SystemModel, SystemModelParams
 from src.models import SubspaceNet, DeepCNN, DeepAugmentedMUSIC, ModelGenerator
 from src.evaluation import evaluate_dnn_model
 
-
 class TrainingParams(object):
     """
     A class that encapsulates the training parameters for the model.
@@ -111,7 +110,7 @@ class TrainingParams(object):
         self,
         system_model: SystemModel = None,
         tau: int = None,
-        diff_method: str = "root_music",
+        diff_method: str = "mvdr",
         model_type: str = "SubspaceNet",
         model: ModelGenerator = None,
     ):
@@ -370,13 +369,15 @@ def train_model(training_params: TrainingParams, model_name: str, checkpoint_pat
         model.train()
         model = model.to(device)
         for data in tqdm(training_params.train_dataset):
-            Rx, DOA = data
+            x, Rx, DOA, A = data
             train_length += DOA.shape[0]
             # Cast observations and DoA to Variables
+            x = Variable(x, requires_grad=True).to(device)
             Rx = Variable(Rx, requires_grad=True).to(device)
             DOA = Variable(DOA, requires_grad=True).to(device)
+            A = Variable(A, requires_grad=True).to(device)
             # Get model output
-            model_output = model(Rx)
+            model_output = model(x, Rx, A)
             if training_params.model_type.startswith("SubspaceNet"):
                 # Default - SubSpaceNet
                 DOA_predictions = model_output[0]

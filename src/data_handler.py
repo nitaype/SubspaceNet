@@ -84,10 +84,15 @@ def create_dataset(
             # Samples model creation
             samples_model.set_doa(doa)
             # Observations matrix creation
-            X = torch.tensor(
-                samples_model.samples_creation(
+            X, _, A, _ = samples_model.samples_creation(
                     noise_mean=0, noise_variance=1, signal_mean=0, signal_variance=1
-                )[0],
+                )
+            X = torch.tensor(
+                X,
+                dtype=torch.complex64,
+            )
+            A = torch.tensor(
+                A,
                 dtype=torch.complex64,
             )
             X_model = create_cov_tensor(X)
@@ -102,10 +107,15 @@ def create_dataset(
             # Samples model creation
             samples_model.set_doa(true_doa)
             # Observations matrix creation
-            X = torch.tensor(
-                samples_model.samples_creation(
+            X, _, A, _ = samples_model.samples_creation(
                     noise_mean=0, noise_variance=1, signal_mean=0, signal_variance=1
-                )[0],
+                )
+            X = torch.tensor(
+                X,
+                dtype=torch.complex64,
+            )
+            A = torch.tensor(
+                A,
                 dtype=torch.complex64,
             )
             if model_type.startswith("SubspaceNet"):
@@ -119,7 +129,7 @@ def create_dataset(
             # Ground-truth creation
             Y = torch.tensor(samples_model.doa, dtype=torch.float64)
             generic_dataset.append((X, Y))
-            model_dataset.append((X_model, Y))
+            model_dataset.append((X, X_model, Y, A))
 
     if save_datasets:
         model_dataset_filename = f"{model_type}_DataSet" + set_dataset_filename(
