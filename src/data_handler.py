@@ -107,7 +107,7 @@ def create_dataset(
             # Samples model creation
             samples_model.set_doa(true_doa)
             # Observations matrix creation
-            X, _, A, _ = samples_model.samples_creation(
+            X, s, A, _ = samples_model.samples_creation(
                     noise_mean=0, noise_variance=1, signal_mean=0, signal_variance=1
                 )
             X = torch.tensor(
@@ -129,7 +129,7 @@ def create_dataset(
             # Ground-truth creation
             Y = torch.tensor(samples_model.doa, dtype=torch.float64)
             generic_dataset.append((X, Y))
-            model_dataset.append((X, X_model, Y, A))
+            model_dataset.append((X, s, X_model, Y, A))
 
     if save_datasets:
         model_dataset_filename = f"{model_type}_DataSet" + set_dataset_filename(

@@ -369,7 +369,7 @@ def train_model(training_params: TrainingParams, model_name: str, checkpoint_pat
         model.train()
         model = model.to(device)
         for data in tqdm(training_params.train_dataset):
-            x, Rx, DOA, A = data
+            x, s, Rx, DOA, A = data
             train_length += DOA.shape[0]
             # Cast observations and DoA to Variables
             x = Variable(x, requires_grad=True).to(device)
