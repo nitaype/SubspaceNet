@@ -44,6 +44,7 @@ import numpy as np
 import warnings
 from src.utils import gram_diagonal_overload, device
 from src.utils import sum_of_diags_torch, find_roots_torch
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
 warnings.simplefilter("ignore")
@@ -828,4 +829,4 @@ def mvdr(signals: torch.Tensor,
     # Apply beamforming: output shape (B, T)
     y = torch.sum(w.conj().transpose(1, 2) @ signals, dim=1)
 
-    return y  # Or `.abs()` or `.real + 0j` depending on use case
+    return y

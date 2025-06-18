@@ -48,6 +48,9 @@ from src.system_model import SystemModel, SystemModelParams
 from src.models import SubspaceNet, DeepCNN, DeepAugmentedMUSIC, ModelGenerator
 from src.evaluation import evaluate_dnn_model
 import wandb
+from src.data_handler import create_autocorrelation_tensor
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
 
 class TrainingParams(object):
     """
@@ -256,10 +259,10 @@ class TrainingParams(object):
         if self.model_type.startswith("DeepCNN"):
             self.criterion = nn.BCELoss()
         else:
-            self.criterion = CSISNRLoss()
+            self.criterion = SISNRLoss()
         return self
 
-    def set_training_dataset(self, train_dataset: list):
+    def set_training_dataset(self, train_dataset: list, valid_dataset: list):
         """
         Sets the training dataset for training.
 
@@ -271,10 +274,11 @@ class TrainingParams(object):
         -------
         self
         """
+        print("Setting training dataset...")
         # Divide into training and validation datasets
-        train_dataset, valid_dataset = train_test_split(
-            train_dataset, test_size=0.1, shuffle=True
-        )
+        # train_dataset, valid_dataset = train_test_split(
+        #     train_dataset, test_size=0.1, shuffle=True
+        # )
         print("Training DataSet size", len(train_dataset))
         print("Validation DataSet size", len(valid_dataset))
         # Transform datasets into DataLoader objects
@@ -282,7 +286,7 @@ class TrainingParams(object):
             train_dataset, batch_size=self.batch_size, shuffle=True, drop_last=False
         )
         self.valid_dataset = torch.utils.data.DataLoader(
-            valid_dataset, batch_size=1, shuffle=False, drop_last=False
+            valid_dataset, batch_size=self.batch_size, shuffle=False, drop_last=False
         )
         return self
 
@@ -323,6 +327,7 @@ def train(
     dt_string_for_save = now.strftime("%d_%m_%Y_%H_%M")
     print("date and time =", dt_string)
     # Train the model
+    print(f"Using device: {device}")
     model, loss_train_list, loss_valid_list = train_model(
         training_parameters, model_name=model_name, checkpoint_path=saving_path
     )
@@ -368,31 +373,70 @@ def train_model(training_params: TrainingParams, model_name: str, checkpoint_pat
         overall_train_loss = 0.0
         # Set model to train mode
         model.train()
-        model = model.to(device)
-        for data in tqdm(training_params.train_dataset):
-            x, s, Rx, DOA, A = data
-            train_length += DOA.shape[0]
-            # Cast observations and DoA to Variables
-            x = Variable(x, requires_grad=True).to(device)
-            Rx = Variable(Rx, requires_grad=True).to(device)
-            DOA = Variable(DOA, requires_grad=True).to(device)
-            A = Variable(A, requires_grad=True).to(device)
-            # Get model output
-            model_output = model(x, Rx, A)
-            if training_params.model_type.startswith("SubspaceNet"):
-                # Default - SubSpaceNet
-                filtered_signal = model_output
-            else:
-                # Deep Augmented MUSIC or DeepCNN
-                DOA_predictions = model_output
+        for j, data in enumerate(tqdm(training_params.train_dataset)):
+            if j >= 125:
+                break
+            noisy_stft, R, clean, steering = data
+            noisy_stft = noisy_stft.to(device)
+            R = R.to(device).to(dtype=torch.float32)
+            clean = clean.to(device)
+            steering = steering.to(device)
+            # stft shape: (B, C, T, F)
+            # clean shape: (B, T)
+            # steering shape: (B, C, 1, F)
+            # R shape: (B, tau, 2C, C, F)
+            # print(noisy_stft.shape, R.shape, clean.shape, steering.shape)
+            B, tau, CC, C, F = R.shape
+            _, _, T, _ = noisy_stft.shape
+            # Reshape inputs for vectorized model execution
+            x = noisy_stft.permute(0, 3, 1, 2).reshape(B * F, C, T)             # (B*F, C, T)
+            A = steering.permute(0, 3, 1, 2).reshape(B * F, C, 1)               # (B*F, C, 1)
+            Rx = R.permute(0, 4, 1, 2, 3).reshape(B * F, tau, 2 * C, C)  # (B*F, tau, 2C, C)
+            x = Variable(x, requires_grad=False)
+            Rx = Variable(Rx, requires_grad=True)
+            A = Variable(A, requires_grad=False)
+            clean = Variable(clean, requires_grad=True)
+            filtered_signal = model(x, Rx, A)   # (B*F, T)
+
+            # filtered_stft_list = []
+            # for f in range(F):
+            #     # Get the current frequency bin
+            #     x = noisy_stft[:, :, :, f] # (B, C, T)
+            #     # Get the steering vector for the current frequency bin
+            #     A = steering[:, :, :, f] # (B, C)
+            #     # print(A.shape)
+            #     Rx = R[:, :, : ,:, f]
+            #     # Cast observations and DoA to Variables
+            #     x = Variable(x, requires_grad=False)
+            #     Rx = Variable(Rx, requires_grad=True)
+            #     A = Variable(A, requires_grad=False) # (B, C)
+            #     # print(f"x shape: {x.shape}, Rx shape: {Rx.shape}, A shape: {A.shape}")
+            #     # Get model output
+            #     model_output = model(x, Rx, A)
+            #     if training_params.model_type.startswith("SubspaceNet"):
+            #         # Default - SubSpaceNet
+            #         filtered_signal = model_output
+            #     else:
+            #         # Deep Augmented MUSIC or DeepCNN
+            #         DOA_predictions = model_output
+            #     filtered_stft_list.append(filtered_signal.unsqueeze(-1))  # shape: (B, T, 1)
+
+            # # shape: (B, T, F)
+            # filtered_stft = torch.cat(filtered_stft_list, dim=-1)
+            # filtered_stft = filtered_stft.permute(0, 2, 1)  # now shape: (B, F, T)
+
+            filtered_stft = filtered_signal.view(B, F, T)
+            # print(filtered_stft.shape)
+            enhanced = torch.istft(
+                filtered_stft, 
+                n_fft=512, 
+                hop_length=256, 
+                win_length=512,
+                return_complex=False
+            )  # shape: (B, time)
             # Compute training loss
-            if training_params.model_type.startswith("DeepCNN"):
-                train_loss = training_params.criterion(
-                    DOA_predictions.float(), DOA.float()
-                )
-            else:
-                # print(s.shape, filtered_signal.shape)
-                train_loss = training_params.criterion(filtered_signal, s)
+            # print(s.shape, filtered_signal.shape)
+            train_loss = training_params.criterion(enhanced, clean)
             # Back-propagation stage
             try:
                 train_loss.backward()
@@ -407,10 +451,14 @@ def train_model(training_params: TrainingParams, model_name: str, checkpoint_pat
                 # BCE is averaged
                 overall_train_loss += train_loss.item() * len(data[0])
             else:
-                # RMSPE is summed
                 overall_train_loss += train_loss.item()
+                if j % 30 == 29: # print every 100 iterations
+                    print(
+                        f"Epoch {epoch + 1}, Batch {j+1}, Train loss: {train_loss.item()}"
+                    )   
+            print("\n")
         # Average the epoch training loss
-        overall_train_loss = overall_train_loss / train_length
+        overall_train_loss = overall_train_loss / len(training_params.train_dataset)
         loss_train_list.append(overall_train_loss)
         # Update schedular
         training_params.schedular.step()
@@ -424,8 +472,8 @@ def train_model(training_params: TrainingParams, model_name: str, checkpoint_pat
         loss_valid_list.append(valid_loss)
         # Report results
         print(
-            "epoch : {}/{}, Train loss = {:.6f}, Validation loss = {:.6f}".format(
-                epoch + 1, training_params.epochs, overall_train_loss, valid_loss
+            "epoch : {}/{}, Train loss = {:.6f}, Validation loss = {:.6f}, Time: {}".format(
+                epoch + 1, training_params.epochs, overall_train_loss, valid_loss, datetime.now()
             )
         )
         wandb.log({"epoch": epoch, "train_loss": overall_train_loss, "val_loss": valid_loss})

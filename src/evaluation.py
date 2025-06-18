@@ -37,6 +37,10 @@ from src.methods import MUSIC, RootMUSIC, Esprit, MVDR
 from src.utils import *
 from src.models import SubspaceNet
 from src.plotting import plot_spectrum
+from pesq import pesq
+from pystoi import stoi
+import wandb
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
 def evaluate_dnn_model(
@@ -73,17 +77,54 @@ def evaluate_dnn_model(
     model.eval()
     # Gradients calculation isn't required for evaluation
     with torch.no_grad():
-        for data in dataset:
-            X, s, Rx, DOA, A = data
-            test_length += DOA.shape[0]
-            # Convert observations and DoA to device
-            X = X.to(device)
-            s = s.to(device)
-            Rx = Rx.to(device)
-            A = A.to(device)
-            DOA = DOA.to(device)
-            # Get model output
-            model_output = model(X, Rx, A)
+        for i, data in enumerate(dataset):
+            if i >= 22:
+                break
+            noisy_stft, R, clean, steering = data
+            noisy_stft = noisy_stft.to(device)
+            R = R.to(device).to(dtype=torch.float32)
+            clean = clean.to(device)
+            steering = steering.to(device)
+            # stft shape: (B, C, T, F)
+            # clean shape: (B, T)
+            # steering shape: (B, C, 1, F)
+            # R shape: (B, tau, 2C, C, F)
+            # print(noisy_stft.shape, R.shape, clean.shape, steering.shape)
+            B, tau, CC, C, F = R.shape
+            _, _, T, _ = noisy_stft.shape
+
+            x = noisy_stft.permute(0, 3, 1, 2).reshape(B * F, C, T)             # (B*F, C, T)
+            A = steering.permute(0, 3, 1, 2).reshape(B * F, C, 1)               # (B*F, C, 1)
+            Rx = R.permute(0, 4, 1, 2, 3).reshape(B * F, tau, 2 * C, C)  # (B*F, tau, 2C, C)
+            filtered_signal = model(x, Rx, A)   # (B*F, T)
+
+            # filtered_stft_list = []
+            # for f in range(F):
+            #     # Get the current frequency bin
+            #     x = noisy_stft[:, :, :, f] # (B, C, T)
+            #     # Get the steering vector for the current frequency bin
+            #     A = steering[:, :, :, f] # (B, C)
+            #     # print(A.shape)
+            #     Rx = Rx[:, :, : ,:, f]
+            #     x = x.to(device)
+            #     Rx = Rx.to(device).to(dtype=torch.float32)
+            #     A = A.to(device) # (B, C)
+            #     model_output = model(x, Rx, A)
+            #     filtered_signal = model_output
+            #     filtered_stft_list.append(filtered_signal.unsqueeze(-1))  # shape: (B, T, 1)
+            # # shape: (B, T, F)
+            # filtered_stft = torch.cat(filtered_stft_list, dim=-1)
+            # filtered_stft = filtered_stft.permute(0, 2, 1)  # now shape: (B, F, T)
+
+            filtered_stft = filtered_signal.view(B, F, T)
+            enhanced = torch.istft(
+                filtered_stft, 
+                n_fft=512, 
+                hop_length=256, 
+                win_length=512,
+                return_complex=False
+            )  # shape: (B, T)
+
             if model_type.startswith("DA-MUSIC"):
                 # Deep Augmented MUSIC
                 DOA_predictions = model_output
@@ -106,7 +147,7 @@ def evaluate_dnn_model(
                     )
             elif model_type.startswith("SubspaceNet"):
                 # Default - SubSpaceNet
-                filtered_signal = model_output
+                filtered_signal = enhanced
             else:
                 raise Exception(
                     f"evaluate_dnn_model: Model type {model_type} is not defined"
@@ -115,10 +156,10 @@ def evaluate_dnn_model(
             if model_type.startswith("DeepCNN") and isinstance(criterion, RMSPELoss):
                 eval_loss = criterion(DOA_predictions.float(), DOA.float())
             else:
-                eval_loss = criterion(filtered_signal, s)
+                eval_loss = criterion(filtered_signal, clean)
             # add the batch evaluation loss to epoch loss
             overall_loss += eval_loss.item()
-        overall_loss = overall_loss / test_length
+        overall_loss = overall_loss / len(dataset)
     # Plot spectrum for SubspaceNet model
     # if plot_spec and model_type.startswith("SubspaceNet"):
     #     DOA_all = model_output[1]
@@ -366,15 +407,149 @@ def add_random_predictions(M: int, predictions: np.ndarray, algorithm: str):
         )
     return predictions
 
+def test_dnn_model(
+    model,
+    dataset: list,
+    criterion: nn.Module,
+    plot_spec: bool = False,
+    figures: dict = None,
+    model_type: str = "SubspaceNet",
+    wandb_name: str = "test"
+):
+    """
+    Evaluate the DNN model on a given dataset.
+
+    Args:
+        model (nn.Module): The trained model to evaluate.
+        dataset (list): The evaluation dataset.
+        criterion (nn.Module): The loss criterion for evaluation.
+        plot_spec (bool, optional): Whether to plot the spectrum for SubspaceNet model. Defaults to False.
+        figures (dict, optional): Dictionary containing figure objects for plotting. Defaults to None.
+        model_type (str, optional): The type of the model. Defaults to "SubspaceNet".
+
+    Returns:
+        float: The overall evaluation loss.
+
+    Raises:
+        Exception: If the loss criterion is not defined for the specified model type.
+        Exception: If the model type is not defined.
+    """
+
+    wandb.init(project="SubspaceNet", name=wandb_name)
+
+    # Initialize values
+    overall_loss = 0.0
+    test_length = 0
+    stoi_noisy = np.array([])
+    si_sdr_noisy = np.array([])
+    pesq_noisy = np.array([])
+    stoi_enhanced = np.array([])
+    si_sdr_enhanced = np.array([])
+    pesq_enhanced = np.array([])
+    # Set model to eval mode
+    model.eval()
+    # Gradients calculation isn't required for evaluation
+    print("start testing")
+    for i, data in enumerate(dataset):
+        noisy_stft, R, clean, steering = data
+        noisy_stft = noisy_stft.to(device)
+        R = R.to(device).to(dtype=torch.float32)
+        clean = clean.to(device)
+        steering = steering.to(device)
+        # stft shape: (B, C, T, F)
+        # clean shape: (B, T)
+        # steering shape: (B, C, 1, F)
+        # R shape: (B, tau, 2C, C, F)
+        # print(noisy_stft.shape, R.shape, clean.shape, steering.shape)
+        B, tau, CC, C, F = R.shape
+        _, _, T, _ = noisy_stft.shape
+
+        x = noisy_stft.permute(0, 3, 1, 2).reshape(B * F, C, T)             # (B*F, C, T)
+        A = steering.permute(0, 3, 1, 2).reshape(B * F, C, 1)               # (B*F, C, 1)
+        Rx = R.permute(0, 4, 1, 2, 3).reshape(B * F, tau, 2 * C, C)  # (B*F, tau, 2C, C)
+        filtered_signal = model(x, Rx, A)   # (B*F, T)
+
+        filtered_stft = filtered_signal.view(B, F, T)
+        enhanced = torch.istft(
+            filtered_stft, 
+            n_fft=512, 
+            hop_length=256, 
+            win_length=512,
+            return_complex=False
+        )  # shape: (B, T)
+        
+        noisy = torch.istft(
+            noisy_stft[:, 0, :, :].permute(0, 2, 1), 
+            n_fft=512, 
+            hop_length=256, 
+            win_length=512,
+            return_complex=False
+        )  # shape: (B, T)
+
+        enhanced = enhanced/enhanced.max()
+        clean = clean/clean.max()
+        noisy = noisy/noisy.max()
+
+        s1 = clean.squeeze(0).detach().cpu()
+        s_hat = enhanced.squeeze(0).detach().cpu()
+        y = noisy.squeeze(0).detach().cpu()
+
+        # Convert only for functions that need numpy
+        s1_np = s1.cpu().numpy()
+        y_np = y.cpu().numpy()
+        s_hat_np = s_hat.cpu().numpy()
+
+        stoi_noisy = np.append(stoi_noisy, stoi(s1_np, y_np, 16000, extended=False))
+        si_sdr_noisy = np.append(si_sdr_noisy, -criterion(s1.unsqueeze(0), y.unsqueeze(0)))
+        pesq_noisy = np.append(pesq_noisy, pesq(16000, s1_np, y_np, mode="wb"))
+
+        stoi_enhanced = np.append(stoi_enhanced, stoi(s1_np, s_hat_np, 16000, extended=False))
+        si_sdr_enhanced = np.append(si_sdr_enhanced, -criterion(s1.unsqueeze(0), s_hat.unsqueeze(0)))
+        pesq_enhanced = np.append(pesq_enhanced, pesq(16000, s1_np, s_hat_np, mode="wb"))
+
+
+        if i % 20 == 19:  # print every 20 iterations
+            print(i)
+            print(f"STOI: {stoi_noisy.mean()}")
+            print(f"PESQ: {pesq_noisy.mean()}")
+            print(f"SI-SDR: {si_sdr_noisy.mean()}")
+            print(f"STOI: {stoi_enhanced.mean()}")
+            print(f"PESQ: {pesq_enhanced.mean()}")
+            print(f"SI-SDR: {si_sdr_enhanced.mean()}")
+    
+        wandb.log({
+            "test/step": i,
+            "test/stoi_noisy": float(stoi_noisy.mean()),
+            "test/pesq_noisy": float(pesq_noisy.mean()),
+            "test/si_sdr_noisy": float(si_sdr_noisy.mean()),
+            "test/stoi_enhanced": float(stoi_enhanced.mean()),
+            "test/pesq_enhanced": float(pesq_enhanced.mean()),
+            "test/si_sdr_enhanced": float(si_sdr_enhanced.mean())
+        })
+
+    wandb.log({
+        "audio/clean": wandb.Audio(s1.numpy(), sample_rate=16000),
+        "audio/enhanced": wandb.Audio(s_hat.numpy(), sample_rate=16000),
+        "audio/noisy": wandb.Audio(y.numpy(), sample_rate=16000),
+    })
+    wandb.finish()
+
+    # print(f"Reference metrics for distorted speech at {snr_dbs[0]}dB are\n")
+    print(f"STOI: {stoi_noisy.mean()}")
+    print(f"PESQ: {pesq_noisy.mean()}")
+    print(f"SI-SDR: {si_sdr_noisy.mean()}")
+    print(f"STOI: {stoi_enhanced.mean()}")
+    print(f"PESQ: {pesq_enhanced.mean()}")
+    print(f"SI-SDR: {si_sdr_enhanced.mean()}")
+    plt.show()
+    return 
 
 def evaluate(
     model: nn.Module,
     model_type: str,
     model_test_dataset: list,
-    generic_test_dataset: list,
     criterion: nn.Module,
     subspace_criterion,
-    system_model,
     figures: dict,
     plot_spec: bool = True,
     augmented_methods: list = None,
@@ -402,26 +577,27 @@ def evaluate(
         None
     """
     # Set default methods for SubspaceNet augmentation
-    if not isinstance(augmented_methods, list) and model_type.startswith("SubspaceNet"):
-        augmented_methods = [
-            # "mvdr",
-            "r-music",
-            "esprit",
-            # "music",
-        ]
-    # Set default model-based subspace methods
-    if not isinstance(subspace_methods, list):
-        subspace_methods = [
-            "esprit",
-            # "music",
-            "r-music",
-            # "mvdr",
-            # "sps-r-music",
-            # "sps-esprit",
-            # "sps-music"
-            # "bb-music",
-        ]
+    # if not isinstance(augmented_methods, list) and model_type.startswith("SubspaceNet"):
+    #     augmented_methods = [
+    #         # "mvdr",
+    #         "r-music",
+    #         "esprit",
+    #         # "music",
+    #     ]
+    # # Set default model-based subspace methods
+    # if not isinstance(subspace_methods, list):
+    #     subspace_methods = [
+    #         "esprit",
+    #         # "music",
+    #         "r-music",
+    #         # "mvdr",
+    #         # "sps-r-music",
+    #         # "sps-esprit",
+    #         # "sps-music"
+    #         # "bb-music",
+    #     ]
     # Evaluate SubspaceNet + differentiable algorithm performances
+    print("start testing")
     model_test_loss = evaluate_dnn_model(
         model=model,
         dataset=model_test_dataset,
@@ -432,25 +608,25 @@ def evaluate(
     )
     print(f"{model_type} Test loss = {model_test_loss}")
     # Evaluate SubspaceNet augmented methods
-    for algorithm in augmented_methods:
-        loss = evaluate_augmented_model(
-            model=model,
-            dataset=model_test_dataset,
-            system_model=system_model,
-            criterion=subspace_criterion,
-            algorithm=algorithm,
-            plot_spec=plot_spec,
-            figures=figures,
-        )
-        print("augmented {} test loss = {}".format(algorithm, loss))
-    # Evaluate classical subspace methods
-    for algorithm in subspace_methods:
-        loss = evaluate_model_based(
-            generic_test_dataset,
-            system_model,
-            criterion=subspace_criterion,
-            plot_spec=plot_spec,
-            algorithm=algorithm,
-            figures=figures,
-        )
-        print("{} test loss = {}".format(algorithm.lower(), loss))
+    # for algorithm in augmented_methods:
+    #     loss = evaluate_augmented_model(
+    #         model=model,
+    #         dataset=model_test_dataset,
+    #         system_model=system_model,
+    #         criterion=subspace_criterion,
+    #         algorithm=algorithm,
+    #         plot_spec=plot_spec,
+    #         figures=figures,
+    #     )
+    #     print("augmented {} test loss = {}".format(algorithm, loss))
+    # # Evaluate classical subspace methods
+    # for algorithm in subspace_methods:
+    #     loss = evaluate_model_based(
+    #         generic_test_dataset,
+    #         system_model,
+    #         criterion=subspace_criterion,
+    #         plot_spec=plot_spec,
+    #         algorithm=algorithm,
+    #         figures=figures,
+    #     )
+    #     print("{} test loss = {}".format(algorithm.lower(), loss))

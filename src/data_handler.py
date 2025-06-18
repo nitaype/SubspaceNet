@@ -36,9 +36,23 @@ from tqdm import tqdm
 from src.signal_creation import Samples
 from pathlib import Path
 from src.system_model import SystemModelParams
+import os
+import scipy.io
+import soundfile as sf
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
+def pad_to_length(signal, target_length):
+    """
+    Pads a complex tensor (C, T) along time dim to target_length with zeros.
+    """
+    C, T = signal.shape
+    if T >= target_length:
+        return signal[:, :target_length]
+    else:
+        pad_size = target_length - T
+        pad = torch.zeros(C, pad_size, dtype=signal.dtype, device=signal.device)
+        return torch.cat([signal, pad], dim=1)
 
 def create_dataset(
     system_model_params: SystemModelParams,
@@ -358,3 +372,18 @@ def set_dataset_filename(system_model_params: SystemModelParams, samples_size: f
         + ".h5"
     )
     return suffix_filename
+
+class SimDS(torch.utils.data.Dataset):
+    def __init__(self, root_folder):
+        self.root_folder = Path(root_folder)
+        self.files = sorted(self.root_folder.glob("sample_*.pt"))
+
+    def __len__(self):
+        return len(self.files)
+
+    def __getitem__(self, idx):
+        sample_path = self.files[idx]
+        data = torch.load(sample_path)
+
+        return data["noisy_stft"], data["Rx"], data["ref_channel"], data["V_k"]
+

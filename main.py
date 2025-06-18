@@ -30,11 +30,13 @@ from src.signal_creation import *
 from src.data_handler import *
 from src.criterions import set_criterions
 from src.training import *
-from src.evaluation import evaluate
+from src.evaluation import test_dnn_model
 from src.plotting import initialize_figures
 from pathlib import Path
 from src.models import ModelGenerator
 import wandb
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+wandb.login(key="d55bad0e0b8a03b9bdfa4beeacf508cd29e1e398")
 
 # Initialization
 warnings.simplefilter("ignore")
@@ -42,12 +44,15 @@ os.system("cls||clear")
 plt.close("all")
 
 if __name__ == "__main__":
+    # 
+    simulation_filename = "2speakers_small_data"
+
     # Initialize paths
-    external_data_path = Path.cwd() / "data"
+    external_data_path = Path("/gpfs0/bgu-br/users/tatarjit/model-based-nir/data")
     scenario_data_path = "diff_mvdr"
     datasets_path = external_data_path / "datasets" / scenario_data_path
     simulations_path = external_data_path / "simulations"
-    saving_path = external_data_path / "weights"
+    saving_path = external_data_path / "weights_cluster"
     # create folders if not exists
     datasets_path.mkdir(parents=True, exist_ok=True)
     (datasets_path / "train").mkdir(parents=True, exist_ok=True)
@@ -62,12 +67,13 @@ if __name__ == "__main__":
     # Operations commands
     commands = {
         "SAVE_TO_FILE": False,  # Saving results to file or present them over CMD
-        "CREATE_DATA": True,  # Creating new dataset
+        "CREATE_DATA": False,  # Creating new dataset
         "LOAD_DATA": False,  # Loading data from exist dataset
+        "LOAD_RECORDINGS": True,  # Load recordings from external file
         "LOAD_MODEL": False,  # Load specific model for training
-        "TRAIN_MODEL": True,  # Applying training operation
+        "TRAIN_MODEL": False,  # Applying training operation
         "SAVE_MODEL": True,  # Saving tuned model
-        "EVALUATE_MODE": False,  # Evaluating desired algorithms
+        "EVALUATE_MODE": True,  # Evaluating desired algorithms
     }
     # Saving simulation scores to external file
     if commands["SAVE_TO_FILE"]:
@@ -78,9 +84,9 @@ if __name__ == "__main__":
     # Define system model parameters
     system_model_params = (
         SystemModelParams()
-        .set_parameter("N", 8)
-        .set_parameter("M", 5)
-        .set_parameter("T", 100)
+        .set_parameter("N", 6)
+        .set_parameter("M", 2)
+        .set_parameter("T", 376)
         .set_parameter("snr", 10)
         .set_parameter("signal_type", "NarrowBand")
         .set_parameter("signal_nature", "non-coherent")
@@ -97,12 +103,12 @@ if __name__ == "__main__":
         .set_model(system_model_params)
     )
     # Define samples size
-    samples_size = 1000  # Overall dateset size
+    samples_size = 5000  # Overall dateset size
     train_test_ratio = 0.05  # training and testing datasets ratio
     # Sets simulation filename
-    simulation_filename = get_simulation_filename(
-        system_model_params=system_model_params, model_config=model_config
-    )
+    # simulation_filename = get_simulation_filename(
+    #     system_model_params=system_model_params, model_config=model_config
+    # )
     # Print new simulation intro
     print("------------------------------------")
     print("---------- New Simulation ----------")
@@ -156,16 +162,25 @@ if __name__ == "__main__":
             is_training=True,
         )
 
+    # Load recordings from external file
+    elif commands["LOAD_RECORDINGS"]:
+        # Load recordings from external file
+        train_dataset = SimDS("/gpfs0/bgu-br/users/tatarjit/model-based-nir/2speakers_ds/si_tr_s_preprocessed")
+        val_dataset = SimDS("/gpfs0/bgu-br/users/tatarjit/model-based-nir/2speakers_ds/si_dt_05_preprocessed")
+        test_dataset = SimDS("/gpfs0/bgu-br/users/tatarjit/model-based-nir/2speakers_ds/si_et_05_preprocessed")
+
+        print("Loaded recordings")
+
     # Training stage
     if commands["TRAIN_MODEL"]:
         # Assign the training parameters object
         simulation_parameters = (
             TrainingParams()
-            .set_batch_size(8)
-            .set_epochs(10)
+            .set_batch_size(16)
+            .set_epochs(50)
             .set_model(model=model_config)
-            .set_optimizer(optimizer="Adam", learning_rate=0.00001, weight_decay=1e-9)
-            .set_training_dataset(train_dataset)
+            .set_optimizer(optimizer="Adam", learning_rate=1e-4, weight_decay=1e-7)
+            .set_training_dataset(train_dataset, val_dataset)
             .set_schedular(step_size=10, gamma=0.2)
             .set_criterion()
         )
@@ -185,19 +200,19 @@ if __name__ == "__main__":
             project="SubspaceNet",                     # Your W&B project name
             name=simulation_filename,                  # Unique run name
             config={
-                "batch_size": 8,
-                "epochs": 20,
-                "learning_rate": 0.00001,
-                "weight_decay": 1e-9,
-                "snr": system_model_params.snr,
-                "model_type": model_config.model_type,
-                "diff_method": model_config.diff_method,
+                "batch_size": simulation_parameters.batch_size,
+                "epochs": simulation_parameters.epochs,
+                "learning_rate": simulation_parameters.learning_rate,
+                "weight_decay": simulation_parameters.weight_decay,
+                "step_size": simulation_parameters.step_size,
+                "gamma": simulation_parameters.gamma,
                 "N": system_model_params.N,
                 "M": system_model_params.M,
                 "T": system_model_params.T,
             }
         )
         # Perform simulation training and evaluation stages
+        print("Training Model...")
         model, loss_train_list, loss_valid_list = train(
             training_parameters=simulation_parameters,
             model_name=simulation_filename,
@@ -225,23 +240,20 @@ if __name__ == "__main__":
         # Initialize figures dict for plotting
         figures = initialize_figures()
         # Define loss measure for evaluation
-        criterion, subspace_criterion = set_criterions("rmse")
+        criterion, subspace_criterion = set_criterions("sisnr")
         # Load datasets for evaluation
-        if not (commands["CREATE_DATA"] or commands["LOAD_DATA"]):
-            test_dataset, generic_test_dataset, samples_model = load_datasets(
-                system_model_params=system_model_params,
-                model_type=model_config.model_type,
-                samples_size=samples_size,
-                datasets_path=datasets_path,
-                train_test_ratio=train_test_ratio,
-            )
+        # if not (commands["CREATE_DATA"] or commands["LOAD_DATA"]):
+        #     test_dataset, generic_test_dataset, samples_model = load_datasets(
+        #         system_model_params=system_model_params,
+        #         model_type=model_config.model_type,
+        #         samples_size=samples_size,
+        #         datasets_path=datasets_path,
+        #         train_test_ratio=train_test_ratio,
+        #     )
 
         # Generate DataLoader objects
         model_test_dataset = torch.utils.data.DataLoader(
             test_dataset, batch_size=1, shuffle=False, drop_last=False
-        )
-        generic_test_dataset = torch.utils.data.DataLoader(
-            generic_test_dataset, batch_size=1, shuffle=False, drop_last=False
         )
         # Load pre-trained model
         if not commands["TRAIN_MODEL"]:
@@ -251,7 +263,6 @@ if __name__ == "__main__":
                 .set_model(model=model_config)
                 .load_model(
                     loading_path=saving_path
-                    / "final_models"
                     / simulation_filename
                 )
             )
@@ -263,19 +274,18 @@ if __name__ == "__main__":
             phase="evaluation",
             parameters=simulation_parameters,
         )
+        wandb_name = simulation_filename + "test"
         # Evaluate DNN models, augmented and subspace methods
-        evaluate(
+        test_dnn_model(
             model=model,
-            model_type=model_config.model_type,
-            model_test_dataset=model_test_dataset,
-            generic_test_dataset=generic_test_dataset,
+            dataset=model_test_dataset,
             criterion=criterion,
-            subspace_criterion=subspace_criterion,
-            system_model=samples_model,
-            figures=figures,
             plot_spec=False,
+            figures=figures,
+            model_type=model_config.model_type,
+            wandb_name = wandb_name,
         )
     plt.show()
     print("end")
 
-# GitHub test
+#runai-cmd --name nir  -g 1 --cpu-limit 50 -- "conda activate SubspaceNetEnv && python /gpfs0/bgu-br/users/tatarjit/model-based-nir/main.py"
