@@ -78,7 +78,7 @@ def evaluate_dnn_model(
     # Gradients calculation isn't required for evaluation
     with torch.no_grad():
         for i, data in enumerate(dataset):
-            if i >= 22:
+            if i >= len(dataset)/3:
                 break
             noisy_stft, R, clean, steering = data
             noisy_stft = noisy_stft.to(device)

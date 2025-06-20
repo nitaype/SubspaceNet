@@ -49,6 +49,7 @@ from src.models import SubspaceNet, DeepCNN, DeepAugmentedMUSIC, ModelGenerator
 from src.evaluation import evaluate_dnn_model
 import wandb
 from src.data_handler import create_autocorrelation_tensor
+from torch.optim.lr_scheduler import SequentialLR, LinearLR, StepLR
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
@@ -224,27 +225,37 @@ class TrainingParams(object):
             )
         return self
 
-    def set_schedular(self, step_size: float, gamma: float):
-        """
-        Sets the scheduler for learning rate decay.
 
-        Args:
-        ----------
-        - step_size (float): Number of steps for learning rate decay iteration.
-        - gamma (float): Learning rate decay value.
-
-        Returns:
-        ----------
-        self
+    def set_schedular(self, step_size: float, gamma: float, start_lr: float, warmup_epochs: int = 10):
         """
-        # Number of steps for learning rate decay iteration
+        Sets a composite scheduler: linear warmup then StepLR.
+        """
         self.step_size = step_size
-        # learning rate decay value
         self.gamma = gamma
-        # Assign schedular for learning rate decay
-        self.schedular = lr_scheduler.StepLR(
-            self.optimizer, step_size=step_size, gamma=gamma
+        self.warmup_epochs = warmup_epochs
+        self.start_lr = start_lr
+
+        # Define warmup and main schedulers
+        warmup_scheduler = LinearLR(
+            self.optimizer,
+            start_factor=self.start_lr / self.learning_rate,  # scales from 2e-5 to 1e-4
+            end_factor=1.0,
+            total_iters=warmup_epochs
         )
+
+        step_scheduler = StepLR(
+            self.optimizer,
+            step_size=step_size,
+            gamma=gamma
+        )
+
+        # Chain them
+        self.schedular = SequentialLR(
+            self.optimizer,
+            schedulers=[warmup_scheduler, step_scheduler],
+            milestones=[warmup_epochs]
+        )
+
         return self
 
     def set_criterion(self):
@@ -374,7 +385,7 @@ def train_model(training_params: TrainingParams, model_name: str, checkpoint_pat
         # Set model to train mode
         model.train()
         for j, data in enumerate(tqdm(training_params.train_dataset)):
-            if j >= 125:
+            if j >= len(training_params.train_dataset)/3:
                 break
             noisy_stft, R, clean, steering = data
             noisy_stft = noisy_stft.to(device)

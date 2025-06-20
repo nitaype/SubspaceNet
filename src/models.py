@@ -304,6 +304,7 @@ class SubspaceNet(nn.Module):
         self.ReLU = nn.ReLU()
         # Set the subspace method for training
         self.set_diff_method(diff_method)
+        # self._init_weights()  # 👈 call weight initialization - not working good
 
     def set_diff_method(self, diff_method: str):
         """Sets the differentiable subspace method for training subspaceNet.
@@ -341,6 +342,19 @@ class SubspaceNet(nn.Module):
 
         """
         return torch.cat((self.ReLU(X), self.ReLU(-X)), 1)
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Linear):  # If you add fully connected layers later
+                nn.init.kaiming_uniform_(m.weight, a=math.sqrt(5))
+                if m.bias is not None:
+                    fan_in, _ = nn.init._calculate_fan_in_and_fan_out(m.weight)
+                    bound = 1 / math.sqrt(fan_in)
+                    nn.init.uniform_(m.bias, -bound, bound)
 
     def forward(self, X: torch.Tensor, Rx_tau: torch.Tensor, A: torch.Tensor):
         """

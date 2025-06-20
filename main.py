@@ -44,8 +44,14 @@ os.system("cls||clear")
 plt.close("all")
 
 if __name__ == "__main__":
-    # 
-    simulation_filename = "2speakers_small_data"
+    # ------------------------------------------------------------------------------------
+    # ---- Initialize time, date, simulation name and checkpoint name for evaluation ----
+    now = datetime.now()
+    dt_string = now.strftime("%d/%m/%Y %H:%M:%S")
+    dt_string_for_save = now.strftime("%d_%m_%Y_%H_%M")
+    simulation_filename = "2speakers_small_data_tau=50_" + dt_string_for_save
+    checkpoint = '2speakers_small_data_tau=5019_06_2025_10_43'
+    # ------------------------------------------------------------------------------------
 
     # Initialize paths
     external_data_path = Path("/gpfs0/bgu-br/users/tatarjit/model-based-nir/data")
@@ -53,6 +59,7 @@ if __name__ == "__main__":
     datasets_path = external_data_path / "datasets" / scenario_data_path
     simulations_path = external_data_path / "simulations"
     saving_path = external_data_path / "weights_cluster"
+
     # create folders if not exists
     datasets_path.mkdir(parents=True, exist_ok=True)
     (datasets_path / "train").mkdir(parents=True, exist_ok=True)
@@ -60,10 +67,6 @@ if __name__ == "__main__":
     datasets_path.mkdir(parents=True, exist_ok=True)
     simulations_path.mkdir(parents=True, exist_ok=True)
     saving_path.mkdir(parents=True, exist_ok=True)
-    # Initialize time and date
-    now = datetime.now()
-    dt_string = now.strftime("%d/%m/%Y %H:%M:%S")
-    dt_string_for_save = now.strftime("%d_%m_%Y_%H_%M")
     # Operations commands
     commands = {
         "SAVE_TO_FILE": False,  # Saving results to file or present them over CMD
@@ -71,9 +74,9 @@ if __name__ == "__main__":
         "LOAD_DATA": False,  # Loading data from exist dataset
         "LOAD_RECORDINGS": True,  # Load recordings from external file
         "LOAD_MODEL": False,  # Load specific model for training
-        "TRAIN_MODEL": False,  # Applying training operation
+        "TRAIN_MODEL": True,  # Applying training operation
         "SAVE_MODEL": True,  # Saving tuned model
-        "EVALUATE_MODE": True,  # Evaluating desired algorithms
+        "EVALUATE_MODE": False,  # Evaluating desired algorithms
     }
     # Saving simulation scores to external file
     if commands["SAVE_TO_FILE"]:
@@ -99,7 +102,7 @@ if __name__ == "__main__":
         ModelGenerator()
         .set_model_type("SubspaceNet")
         .set_diff_method("mvdr")
-        .set_tau(8)
+        .set_tau(50)
         .set_model(system_model_params)
     )
     # Define samples size
@@ -177,11 +180,11 @@ if __name__ == "__main__":
         simulation_parameters = (
             TrainingParams()
             .set_batch_size(16)
-            .set_epochs(50)
+            .set_epochs(300)
             .set_model(model=model_config)
             .set_optimizer(optimizer="Adam", learning_rate=1e-4, weight_decay=1e-7)
             .set_training_dataset(train_dataset, val_dataset)
-            .set_schedular(step_size=10, gamma=0.2)
+            .set_schedular(step_size=10, gamma=0.8, start_lr = 2e-5, warmup_epochs=10)
             .set_criterion()
         )
         if commands["LOAD_MODEL"]:
@@ -203,9 +206,12 @@ if __name__ == "__main__":
                 "batch_size": simulation_parameters.batch_size,
                 "epochs": simulation_parameters.epochs,
                 "learning_rate": simulation_parameters.learning_rate,
+                "warmup_epochs": simulation_parameters.warmup_epochs,
+                "warmup_start_lr": simulation_parameters.start_lr,
                 "weight_decay": simulation_parameters.weight_decay,
                 "step_size": simulation_parameters.step_size,
                 "gamma": simulation_parameters.gamma,
+                "tau": model_config.tau,
                 "N": system_model_params.N,
                 "M": system_model_params.M,
                 "T": system_model_params.T,
@@ -263,7 +269,7 @@ if __name__ == "__main__":
                 .set_model(model=model_config)
                 .load_model(
                     loading_path=saving_path
-                    / simulation_filename
+                    / checkpoint
                 )
             )
             model = simulation_parameters.model
@@ -274,7 +280,7 @@ if __name__ == "__main__":
             phase="evaluation",
             parameters=simulation_parameters,
         )
-        wandb_name = simulation_filename + "test"
+        wandb_name = simulation_filename + "_test"
         # Evaluate DNN models, augmented and subspace methods
         test_dnn_model(
             model=model,
@@ -288,4 +294,4 @@ if __name__ == "__main__":
     plt.show()
     print("end")
 
-#runai-cmd --name nir  -g 1 --cpu-limit 50 -- "conda activate SubspaceNetEnv && python /gpfs0/bgu-br/users/tatarjit/model-based-nir/main.py"
+#runai-cmd --name nir3 -g 1 --cpu-limit 50 -- "conda activate SubspaceNetEnv && python /gpfs0/bgu-br/users/tatarjit/model-based-nir/main.py"
