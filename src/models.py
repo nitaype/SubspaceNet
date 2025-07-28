@@ -100,7 +100,7 @@ class ModelGenerator(object):
             ValueError: If the diff_method is not defined for SubspaceNet model.
         """
         if self.model_type.startswith("SubspaceNet"):
-            if diff_method not in ["esprit", "root_music", "mvdr"]:
+            if diff_method not in ["esprit", "root_music", "mvdr", "music"]:
                 raise ValueError(
                     f"ModelParams.set_diff_method: {diff_method} is not defined for SubspaceNet model"
                 )
@@ -324,6 +324,8 @@ class SubspaceNet(nn.Module):
             self.diff_method = esprit
         elif diff_method.startswith("mvdr"):
             self.diff_method = mvdr
+        elif diff_method.startswith("music"):
+            self.diff_method = music_spectrum
         else:
             raise Exception(
                 f"SubspaceNet.set_diff_method: Method {diff_method} is not defined for SubspaceNet"
@@ -402,11 +404,15 @@ class SubspaceNet(nn.Module):
         Kx_tag = torch.complex(Rx_real, Rx_imag)  # Shape: [Batch size, N, N])
         # Apply Gram operation diagonal loading
         Rz = gram_diagonal_overload(
-            Kx=Kx_tag, eps=1, batch_size=self.batch_size
+            Kx=Kx_tag, eps=1
         )  # Shape: [Batch size, N, N]
         # Feed surrogate covariance to the differentiable subspace algorithm
-        enhanced = self.diff_method(X, Rz, A)
-        return enhanced
+        if self.diff_method == mvdr:
+            enhanced = self.diff_method(X, Rz, A)
+            return enhanced
+        if self.diff_method == music_spectrum:
+            inverse_spectrum = self.diff_method(self, Rz, A)
+            return inverse_spectrum, Rz # B_F x angles
 
 
 class SubspaceNetEsprit(SubspaceNet):
@@ -473,7 +479,7 @@ class SubspaceNetEsprit(SubspaceNet):
         Kx_tag = torch.complex(Rx_real, Rx_imag)  # Shape: [Batch size, N, N])
         # Apply Gram operation diagonal loading
         Rz = gram_diagonal_overload(
-            Kx=Kx_tag, eps=1, batch_size=self.batch_size
+            Kx=Kx_tag, eps=1
         )  # Shape: [Batch size, N, N]
         # Feed surrogate covariance to Esprit algorithm
         doa_prediction = esprit(Rz, self.M, self.batch_size)
@@ -837,10 +843,72 @@ def mvdr(signals: torch.Tensor,
     denom = denom.real  # Ensure real-valued denominator
     # print(f"denom shape: {denom.shape}")
 
+    # # Threshold to avoid instability (e.g., anything < 1e-6 may be problematic)
+    # threshold = 1e-1
+
+    # # Identify small denominators
+    # too_small = denom.squeeze() < threshold
+    # if torch.any(too_small):
+    #     idx = torch.nonzero(too_small).squeeze()
+    #     print(f"⚠️  Warning: {too_small.sum().item()} MVDR weights have very small denominator (< {threshold}) at indices {idx.tolist()}")
+    #     print("Denominator values:", denom[too_small].flatten().tolist())
+
     # MVDR weights: (B, C, 1)
     w = R_inv_a / denom
+    # weight_norms = torch.norm(w, dim=1)
 
     # Apply beamforming: output shape (B, T)
     y = torch.sum(w.conj().transpose(1, 2) @ signals, dim=1)
 
     return y
+
+def music_spectrum(self, Rz: torch.Tensor, A: torch.Tensor):
+    """Applies the MUSIC operation for generating spectrum (batched & vectorized, clean einsum style)
+
+    Args:
+        Rz (torch.Tensor): Covariance matrices, shape (B, C, C)
+        A (torch.Tensor): Steering vectors, shape (B, C, Q)
+
+    Returns:
+        torch.Tensor: Inverse spectrum values, shape (B, Q)
+    """
+    # Eigendecomposition
+    eigenvalues, eigenvectors = torch.linalg.eigh(Rz)  # (B, C, C)
+    sorted_idx = torch.argsort(torch.abs(eigenvalues), descending=True)
+    sorted_eigvectors = torch.gather(eigenvectors, 2,
+                                    sorted_idx.unsqueeze(-1).expand(-1, -1, Rz.shape[-1]).transpose(1, 2))
+    Un = sorted_eigvectors[:, :, self.M:]        # (B, C, C-M)
+
+    # Hermitian (conjugate transpose)
+    Un_H = torch.conj(Un).transpose(1, 2)   # (B, C-M, C)
+
+    # Transpose steering vectors
+    A_H = torch.conj(A).transpose(1, 2)     # (B, Q, C)
+
+    # Compute projections using einsum
+    # var1: (B, Q, C-M)
+    # var1 = chunked_einsum(A_H, Un, chunk_size=50)  # you can adjust chunk_size
+    var1 = torch.einsum("bqc, bcs -> bqs", A_H, Un)  # (B, Q, C-M)
+
+    # Norm squared
+    inverse_spectrum = torch.norm(var1, dim=-1) ** 2  # (B, Q)
+
+    return inverse_spectrum
+
+
+def chunked_einsum(A_H, Un, chunk_size=50):
+    B, Q, C = A_H.shape
+    S = Un.shape[-1]
+    result_chunks = []
+
+    for q_start in range(0, Q, chunk_size):
+        q_end = min(q_start + chunk_size, Q)
+        A_H_chunk = A_H[:, q_start:q_end, :]  # (B, chunk_size, C)
+        out_chunk = torch.einsum("bqc, bcs -> bqs", A_H_chunk, Un)  # (B, chunk_size, S)
+        result_chunks.append(out_chunk)
+        del A_H_chunk
+        del out_chunk
+        torch.cuda.empty_cache()
+
+    var1 = torch.cat(result_chunks, dim=1)  # (B, Q, S)
+    return var1

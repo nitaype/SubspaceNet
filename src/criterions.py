@@ -122,8 +122,10 @@ class RMSPELoss(nn.Module):
             # Choose minimal error from all permutations
             rmspe_min = torch.min(rmspe_tensor)
             rmspe.append(rmspe_min)
-        result = torch.sum(torch.stack(rmspe, dim = 0))
+        result = torch.mean(torch.stack(rmspe, dim=0))
         return result
+
+
 
 class SISNRLoss(nn.Module):
     """Scale-Invariant Signal-to-Noise Ratio (SISNR) loss function.
@@ -154,20 +156,45 @@ class SISNRLoss(nn.Module):
         """
 
         epsilon = 1e-8
+
+        # Zero-mean normalization
         filtered_signal = filtered_signal - filtered_signal.mean(dim=-1, keepdim=True)
         clean_signal = clean_signal - clean_signal.mean(dim=-1, keepdim=True)
-        reference_pow = clean_signal.pow(2).mean(dim=-1, keepdim=True)
-        mix_pow = (filtered_signal * clean_signal).mean(dim=-1, keepdim=True)
-        scale = mix_pow / (reference_pow + epsilon)
 
+        # print("filtered_signal mean (should be ~0):", filtered_signal.mean().item())
+        # print("clean_signal mean (should be ~0):", clean_signal.mean().item())
+
+        # Compute power of clean (reference)
+        reference_pow = clean_signal.pow(2).mean(dim=-1, keepdim=True)
+        # print("reference_pow shape:", reference_pow.shape)
+        # print("reference_pow mean:", reference_pow.mean().item())
+
+        # Compute projection (scale factor)
+        mix_pow = (filtered_signal * clean_signal).mean(dim=-1, keepdim=True)
+        # print("mix_pow shape:", mix_pow.shape)
+        # print("mix_pow mean:", mix_pow.mean().item())
+
+        scale = mix_pow / (reference_pow + epsilon)
+        # print("scale mean:", scale.mean().item())
+
+        # Project reference onto estimated
         scaled_reference = scale * clean_signal
         error = filtered_signal - scaled_reference
 
+        # Power of projected reference and error
         reference_pow = scaled_reference.pow(2).mean(dim=-1)
         error_pow = error.pow(2).mean(dim=-1)
 
+        # print("scaled reference power mean:", reference_pow.mean().item())
+        # print("error power mean:", error_pow.mean().item())
+
+        # SI-SNR calculation
         si_snr = 10 * torch.log10(reference_pow / (error_pow + epsilon))
-        return -si_snr.mean() # minus for loss function
+        # print("SI-SNR mean:", si_snr.mean().item())
+
+        # Return negative for loss
+        return -si_snr.mean()
+
 
 class CSISNRLoss(nn.Module):
     """Complex Scale-Invariant Signal-to-Noise Ratio (SISNR) loss function.
@@ -223,6 +250,57 @@ class CSISNRLoss(nn.Module):
 
         si_snr = 10 * torch.log10(proj_power / error_power)
         return -si_snr.mean() # minus for loss function
+
+class Spectrum_Loss(nn.Module):
+    """
+    Loss based on MUSIC spectrum values at true DOA locations.
+
+    The loss penalizes low spectrum peaks at true DOAs.
+
+    Args:
+        None
+
+    Forward Args:
+        inverse_spectrum (torch.Tensor): MUSIC spectrum, shape (B, Q)
+        doa (torch.Tensor): True DOA angles in radians, shape (B, M)
+
+    Returns:
+        loss (torch.Tensor): Scalar loss value
+    """
+    def __init__(self):
+        super(Spectrum_Loss, self).__init__()
+
+    def forward(self, inverse_spectrum: torch.Tensor, doa: torch.Tensor):
+        B, M = doa.shape
+        _, Q = inverse_spectrum.shape
+        # print(B, M, Q)
+        # F = inverse_spectrum.shape[0] // B
+
+        # # Expand DOA
+        # doa_expanded = doa.unsqueeze(1).expand(B, F, M)  # shape: (B, F, M)
+        # doa = doa_expanded.reshape(B * F, M)    # shape: (B*F, M)
+
+        # Now: 
+        # - inverse_spectrum shape: (B*F, Q)
+        # - doa_expanded shape: (B*F, M)
+
+        # Create angle grid over Q bins (from -π/2 to π/2)
+        angle_grid = torch.linspace(-np.pi / 2, np.pi / 2, Q, device=inverse_spectrum.device)
+
+        # Find nearest angle index in the grid for each DOA
+        doa_indices = torch.argmin(torch.abs(doa.unsqueeze(-1) - angle_grid), dim=-1)  # (B, M)
+
+        # Gather
+        selected_inverse_spectrum = torch.gather(inverse_spectrum, dim=1, index=doa_indices)  # (B, M, 1)
+
+        # Remove last dimension
+        selected_inverse_spectrum = selected_inverse_spectrum.squeeze(-1)  # (B, M)
+
+        # Compute loss: sum over M (sources), then mean over B (batch)
+        # loss = selected_inverse_spectrum.sum(dim=1).mean()
+        loss = selected_inverse_spectrum.mean()
+
+        return loss
 
 class MSPELoss(nn.Module):
     """Mean Square Periodic Error (MSPE) loss function.
@@ -364,6 +442,9 @@ def set_criterions(criterion_name:str):
     elif criterion_name.startswith("csisnr"):
         criterion = CSISNRLoss()
         subspace_criterion = CSISNRLoss
+    elif criterion_name.startswith("Spectrum_Loss"):
+        criterion = Spectrum_Loss()
+        subspace_criterion = Spectrum_Loss
     else:
         raise Exception(f"criterions.set_criterions: Criterion {criterion_name} is not defined")
     print(f"Loss measure = {criterion_name}")

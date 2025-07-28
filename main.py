@@ -49,8 +49,9 @@ if __name__ == "__main__":
     now = datetime.now()
     dt_string = now.strftime("%d/%m/%Y %H:%M:%S")
     dt_string_for_save = now.strftime("%d_%m_%Y_%H_%M")
-    simulation_filename = "2speakers_small_data_tau=50_" + dt_string_for_save
-    checkpoint = '2speakers_small_data_tau=5019_06_2025_10_43'
+    simulation_filename = "2speakers_full_data_doa_circular" + dt_string_for_save
+    checkpoint = '2speakers_full_data_doa_circular16_07_2025_10_56'
+    # checkpoint = '2speakers_full_data_23_06_2025_08_37'
     # ------------------------------------------------------------------------------------
 
     # Initialize paths
@@ -74,9 +75,9 @@ if __name__ == "__main__":
         "LOAD_DATA": False,  # Loading data from exist dataset
         "LOAD_RECORDINGS": True,  # Load recordings from external file
         "LOAD_MODEL": False,  # Load specific model for training
-        "TRAIN_MODEL": True,  # Applying training operation
+        "TRAIN_MODEL": False,  # Applying training operation
         "SAVE_MODEL": True,  # Saving tuned model
-        "EVALUATE_MODE": False,  # Evaluating desired algorithms
+        "EVALUATE_MODE": True,  # Evaluating desired algorithms
     }
     # Saving simulation scores to external file
     if commands["SAVE_TO_FILE"]:
@@ -87,9 +88,9 @@ if __name__ == "__main__":
     # Define system model parameters
     system_model_params = (
         SystemModelParams()
-        .set_parameter("N", 6)
-        .set_parameter("M", 2)
-        .set_parameter("T", 376)
+        .set_parameter("N", 15)
+        .set_parameter("M", 1)
+        .set_parameter("T", 157)
         .set_parameter("snr", 10)
         .set_parameter("signal_type", "NarrowBand")
         .set_parameter("signal_nature", "non-coherent")
@@ -101,8 +102,8 @@ if __name__ == "__main__":
     model_config = (
         ModelGenerator()
         .set_model_type("SubspaceNet")
-        .set_diff_method("mvdr")
-        .set_tau(50)
+        .set_diff_method("music") # mvdr / music
+        .set_tau(8)
         .set_model(system_model_params)
     )
     # Define samples size
@@ -168,9 +169,33 @@ if __name__ == "__main__":
     # Load recordings from external file
     elif commands["LOAD_RECORDINGS"]:
         # Load recordings from external file
-        train_dataset = SimDS("/gpfs0/bgu-br/users/tatarjit/model-based-nir/2speakers_ds/si_tr_s_preprocessed")
-        val_dataset = SimDS("/gpfs0/bgu-br/users/tatarjit/model-based-nir/2speakers_ds/si_dt_05_preprocessed")
-        test_dataset = SimDS("/gpfs0/bgu-br/users/tatarjit/model-based-nir/2speakers_ds/si_et_05_preprocessed")
+        if model_config.diff_method == "mvdr":
+            train_dataset = SimDS("/gpfs0/bgu-br/users/tatarjit/model-based-nir/2speakers_ds/si_tr_s_preprocessed")
+            val_dataset = SimDS("/gpfs0/bgu-br/users/tatarjit/model-based-nir/2speakers_ds/si_dt_05_preprocessed")
+            test_dataset = SimDS("/gpfs0/bgu-br/users/tatarjit/model-based-nir/2speakers_ds/si_et_05_preprocessed")
+        if model_config.diff_method == "music":
+            # --- 2 speakers with reverb ---
+            # train_dataset = SimDSdoa("/gpfs0/bgu-br/users/tatarjit/model-based-nir/2speakers_ds_doa2/si_tr_s_preprocessed")
+            # val_dataset = SimDSdoa("/gpfs0/bgu-br/users/tatarjit/model-based-nir/2speakers_ds_doa2/si_dt_05_preprocessed")
+            # test_dataset = SimDSdoa("/gpfs0/bgu-br/users/tatarjit/model-based-nir/2speakers_ds_doa2/si_et_05_preprocessed")
+            # train_dataset = SimDSdoa("/gpfs0/bgu-br/users/tatarjit/model-based-nir/2speakers_ds_doa2/2spkrs_1tau_0.5sec/train_preprocessed")
+            # val_dataset = SimDSdoa("/gpfs0/bgu-br/users/tatarjit/model-based-nir/2speakers_ds_doa2/2spkrs_1tau_0.5sec/validation_preprocessed")
+            # test_dataset = SimDSdoa("/gpfs0/bgu-br/users/tatarjit/model-based-nir/2speakers_ds_doa2/2spkrs_1tau_0.5sec/test_preprocessed")
+
+            # --- one sine wave ---
+            # train_dataset = SimDSdoa("/gpfs0/bgu-br/users/tatarjit/model-based-nir/1sin_ds/train_preprocessed")
+            # val_dataset = SimDSdoa("/gpfs0/bgu-br/users/tatarjit/model-based-nir/1sin_ds/val/si_dt_05_preprocessed")
+            # test_dataset = SimDSdoa("/gpfs0/bgu-br/users/tatarjit/model-based-nir/1sin_ds/test/si_et_05_preprocessed")
+
+            # --- 1 speaker without reverb ---
+            # train_dataset = SimDSdoa("/gpfs0/bgu-br/users/tatarjit/model-based-nir/1speaker_ds/si_tr_s_preprocessed")
+            # val_dataset = SimDSdoa("/gpfs0/bgu-br/users/tatarjit/model-based-nir/1speaker_ds/si_dt_05_preprocessed")
+            # test_dataset = SimDSdoa("/gpfs0/bgu-br/users/tatarjit/model-based-nir/1speaker_ds/si_dt_05_preprocessed")
+
+            # --- 2 speakers without reverb ---
+            train_dataset = SimDSdoa("/gpfs0/bgu-br/users/tatarjit/model-based-nir/2speakers_ds_noEcho/si_tr_s_preprocessed")
+            val_dataset = SimDSdoa("/gpfs0/bgu-br/users/tatarjit/model-based-nir/2speakers_ds_noEcho/si_dt_05_preprocessed")
+            test_dataset = SimDSdoa("/gpfs0/bgu-br/users/tatarjit/model-based-nir/2speakers_ds_noEcho/si_dt_05_preprocessed")
 
         print("Loaded recordings")
 
@@ -182,14 +207,14 @@ if __name__ == "__main__":
             .set_batch_size(16)
             .set_epochs(300)
             .set_model(model=model_config)
-            .set_optimizer(optimizer="Adam", learning_rate=1e-4, weight_decay=1e-7)
+            .set_optimizer(optimizer="Adam", learning_rate=1e-3, weight_decay=1e-6)
             .set_training_dataset(train_dataset, val_dataset)
-            .set_schedular(step_size=10, gamma=0.8, start_lr = 2e-5, warmup_epochs=10)
+            .set_schedular(step_size=10, gamma=0.3, total_epochs=300, start_lr=1e-3, warmup_epochs=1, min_lr_factor=0.1)
             .set_criterion()
         )
         if commands["LOAD_MODEL"]:
             simulation_parameters.load_model(
-                loading_path=saving_path / "final_models" / simulation_filename
+                loading_path=saving_path / checkpoint
             )
         # Print training simulation details
         simulation_summary(
@@ -246,7 +271,10 @@ if __name__ == "__main__":
         # Initialize figures dict for plotting
         figures = initialize_figures()
         # Define loss measure for evaluation
-        criterion, subspace_criterion = set_criterions("sisnr")
+        if model_config.diff_method == "mvdr":
+            criterion, subspace_criterion = set_criterions("sisnr")
+        if model_config.diff_method == "music":
+            criterion, subspace_criterion = set_criterions("Spectrum_Loss")
         # Load datasets for evaluation
         # if not (commands["CREATE_DATA"] or commands["LOAD_DATA"]):
         #     test_dataset, generic_test_dataset, samples_model = load_datasets(
@@ -280,7 +308,7 @@ if __name__ == "__main__":
             phase="evaluation",
             parameters=simulation_parameters,
         )
-        wandb_name = simulation_filename + "_test"
+        wandb_name = checkpoint + "_test"
         # Evaluate DNN models, augmented and subspace methods
         test_dnn_model(
             model=model,
@@ -294,4 +322,4 @@ if __name__ == "__main__":
     plt.show()
     print("end")
 
-#runai-cmd --name nir3 -g 1 --cpu-limit 50 -- "conda activate SubspaceNetEnv && python /gpfs0/bgu-br/users/tatarjit/model-based-nir/main.py"
+#runai-cmd --name test2 -g 1 --cpu-limit 32 -- "conda activate SubspaceNetEnv && python /gpfs0/bgu-br/users/tatarjit/model-based-nir/main.py"

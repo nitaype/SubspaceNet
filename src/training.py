@@ -49,7 +49,7 @@ from src.models import SubspaceNet, DeepCNN, DeepAugmentedMUSIC, ModelGenerator
 from src.evaluation import evaluate_dnn_model
 import wandb
 from src.data_handler import create_autocorrelation_tensor
-from torch.optim.lr_scheduler import SequentialLR, LinearLR, StepLR
+from torch.optim.lr_scheduler import SequentialLR, LinearLR, StepLR, CosineAnnealingLR
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
@@ -225,23 +225,34 @@ class TrainingParams(object):
             )
         return self
 
-
-    def set_schedular(self, step_size: float, gamma: float, start_lr: float, warmup_epochs: int = 10):
+    def set_schedular(self, step_size: int, gamma: float, total_epochs: int, start_lr: float, warmup_epochs: int = 10, min_lr_factor: float = 0.1):
         """
-        Sets a composite scheduler: linear warmup then StepLR.
+        Sets a composite scheduler: linear warmup then CosineAnnealingLR.
+        Args:
+            total_epochs (int): Total number of training epochs.
+            start_lr (float): Starting learning rate for warmup (e.g., 2e-6).
+            warmup_epochs (int): Number of warmup epochs.
+            min_lr_factor (float): Minimum LR factor for cosine annealing (e.g., 0.1 means final LR = 0.1 * base LR).
         """
-        self.step_size = step_size
-        self.gamma = gamma
         self.warmup_epochs = warmup_epochs
         self.start_lr = start_lr
+        self.gamma = gamma
+        self.step_size = step_size
 
-        # Define warmup and main schedulers
+        # Warmup scheduler
         warmup_scheduler = LinearLR(
             self.optimizer,
-            start_factor=self.start_lr / self.learning_rate,  # scales from 2e-5 to 1e-4
+            start_factor=self.start_lr / self.learning_rate,
             end_factor=1.0,
             total_iters=warmup_epochs
         )
+
+        # # Cosine annealing scheduler
+        # step_scheduler = CosineAnnealingLR(
+        #     self.optimizer,
+        #     T_max=total_epochs - warmup_epochs,
+        #     eta_min=self.learning_rate * min_lr_factor
+        # )
 
         step_scheduler = StepLR(
             self.optimizer,
@@ -249,7 +260,7 @@ class TrainingParams(object):
             gamma=gamma
         )
 
-        # Chain them
+        # Sequential scheduler
         self.schedular = SequentialLR(
             self.optimizer,
             schedulers=[warmup_scheduler, step_scheduler],
@@ -257,6 +268,7 @@ class TrainingParams(object):
         )
 
         return self
+
 
     def set_criterion(self):
         """
@@ -270,7 +282,10 @@ class TrainingParams(object):
         if self.model_type.startswith("DeepCNN"):
             self.criterion = nn.BCELoss()
         else:
-            self.criterion = SISNRLoss()
+            if self.diff_method == "mvdr":
+                self.criterion = SISNRLoss()
+            if self.diff_method == "music":
+                self.criterion = Spectrum_Loss()
         return self
 
     def set_training_dataset(self, train_dataset: list, valid_dataset: list):
@@ -379,75 +394,117 @@ def train_model(training_params: TrainingParams, model_name: str, checkpoint_pat
     since = time.time()
     print("\n---Start Training Stage ---\n")
     # Run over all epochs
+    data_crop = len(training_params.train_dataset)
     for epoch in range(training_params.epochs):
         train_length = 0
         overall_train_loss = 0.0
         # Set model to train mode
         model.train()
         for j, data in enumerate(tqdm(training_params.train_dataset)):
-            if j >= len(training_params.train_dataset)/3:
+            if j >= data_crop:
                 break
-            noisy_stft, R, clean, steering = data
-            noisy_stft = noisy_stft.to(device)
-            R = R.to(device).to(dtype=torch.float32)
-            clean = clean.to(device)
-            steering = steering.to(device)
-            # stft shape: (B, C, T, F)
-            # clean shape: (B, T)
-            # steering shape: (B, C, 1, F)
-            # R shape: (B, tau, 2C, C, F)
-            # print(noisy_stft.shape, R.shape, clean.shape, steering.shape)
-            B, tau, CC, C, F = R.shape
-            _, _, T, _ = noisy_stft.shape
-            # Reshape inputs for vectorized model execution
-            x = noisy_stft.permute(0, 3, 1, 2).reshape(B * F, C, T)             # (B*F, C, T)
-            A = steering.permute(0, 3, 1, 2).reshape(B * F, C, 1)               # (B*F, C, 1)
-            Rx = R.permute(0, 4, 1, 2, 3).reshape(B * F, tau, 2 * C, C)  # (B*F, tau, 2C, C)
-            x = Variable(x, requires_grad=False)
-            Rx = Variable(Rx, requires_grad=True)
-            A = Variable(A, requires_grad=False)
-            clean = Variable(clean, requires_grad=True)
-            filtered_signal = model(x, Rx, A)   # (B*F, T)
+            if training_params.diff_method == "mvdr":
+                noisy_stft, R, clean, steering = data
+                noisy_stft = noisy_stft.to(device)
+                R = R.to(device).to(dtype=torch.float32)
+                clean = clean.to(device)
+                steering = steering.to(device)
+                # stft shape: (B, C, T, F)
+                # clean shape: (B, T)
+                # steering shape: (B, C, 1, F)
+                # R shape: (B, tau, 2C, C, F)
+                # print(noisy_stft.shape, R.shape, clean.shape, steering.shape)
+                B, tau, CC, C, F = R.shape
+                _, _, T, _ = noisy_stft.shape
+                # Reshape inputs for vectorized model execution
+                x = noisy_stft.permute(0, 3, 1, 2).reshape(B * F, C, T)             # (B*F, C, T)
+                A = steering.permute(0, 3, 1, 2).reshape(B * F, C, 1)               # (B*F, C, 1)
+                Rx = R.permute(0, 4, 1, 2, 3).reshape(B * F, tau, 2 * C, C)  # (B*F, tau, 2C, C)
+                x = Variable(x, requires_grad=False)
+                Rx = Variable(Rx, requires_grad=True)
+                A = Variable(A, requires_grad=False)
+                clean = Variable(clean, requires_grad=True)
+                filtered_signal = model(x, Rx, A)   # (B*F, T)
 
-            # filtered_stft_list = []
-            # for f in range(F):
-            #     # Get the current frequency bin
-            #     x = noisy_stft[:, :, :, f] # (B, C, T)
-            #     # Get the steering vector for the current frequency bin
-            #     A = steering[:, :, :, f] # (B, C)
-            #     # print(A.shape)
-            #     Rx = R[:, :, : ,:, f]
-            #     # Cast observations and DoA to Variables
-            #     x = Variable(x, requires_grad=False)
-            #     Rx = Variable(Rx, requires_grad=True)
-            #     A = Variable(A, requires_grad=False) # (B, C)
-            #     # print(f"x shape: {x.shape}, Rx shape: {Rx.shape}, A shape: {A.shape}")
-            #     # Get model output
-            #     model_output = model(x, Rx, A)
-            #     if training_params.model_type.startswith("SubspaceNet"):
-            #         # Default - SubSpaceNet
-            #         filtered_signal = model_output
-            #     else:
-            #         # Deep Augmented MUSIC or DeepCNN
-            #         DOA_predictions = model_output
-            #     filtered_stft_list.append(filtered_signal.unsqueeze(-1))  # shape: (B, T, 1)
+                filtered_stft = filtered_signal.view(B, F, T)
+                # print(filtered_stft.shape)
+                enhanced = torch.istft(
+                    filtered_stft, 
+                    n_fft=512, 
+                    hop_length=256, 
+                    win_length=512,
+                    return_complex=False
+                )  # shape: (B, time)
+                # Compute training loss
+                # print(s.shape, filtered_signal.shape)
+                train_loss = training_params.criterion(enhanced, clean)
 
-            # # shape: (B, T, F)
-            # filtered_stft = torch.cat(filtered_stft_list, dim=-1)
-            # filtered_stft = filtered_stft.permute(0, 2, 1)  # now shape: (B, F, T)
+            if training_params.diff_method == "music":
+                noisy_stft, R, clean, steering, doa = data
+                noisy_stft = noisy_stft.to(device)
+                R = R.to(device).to(dtype=torch.float32)
+                clean = clean.to(device)
+                steering = steering.to(device)
+                doa = doa.to(device) # radians
+                doa = doa.squeeze(1)
+                # stft shape: (B, C, T, F)
+                # clean shape: (B, T)
+                # steering shape: (B, C, Q, F)
+                # R shape: (B, tau, 2C, C, F)
+                # doa shape: (B, M)
+                # print(noisy_stft.shape, R.shape, clean.shape, steering.shape)
+                B, tau, CC, C, F = R.shape
+                _, _, Q, _ = steering.shape
+                _, _, T, _ = noisy_stft.shape
+                # Reshape inputs for vectorized model execution
+                x = noisy_stft.permute(0, 3, 1, 2).reshape(B * F, C, T)             # (B*F, C, T)
+                A = steering.permute(0, 3, 1, 2).reshape(B * F, C, Q)               # (B*F, C, Q)
+                Rx = R.permute(0, 4, 1, 2, 3).reshape(B * F, tau, 2 * C, C)  # (B*F, tau, 2C, C)
+                # x = Variable(x, requires_grad=False)
+                Rx = Variable(Rx, requires_grad=True)
+                # A = Variable(A, requires_grad=False)
+                # clean = Variable(clean, requires_grad=True)
+                doa = Variable(doa, requires_grad=True)
+                inverse_spectrum, R = model(x, Rx, A)   # (B*F, Q)
+                inverse_spectrum = inverse_spectrum.view(B, F, -1)  # (B, F, Q)
+                # print(inverse_spectrum.shape)
+                epsilon = 0
+                # spectrum_per_f = 1 / (inverse_spectrum + epsilon)
+                # # print(spectrum_per_f.shape)
+                # spectrum_mean = spectrum_per_f.mean(dim=1)
+                # # print(spectrum_sum.shape)
+                # epsilon = 0
+                # inverse_spectrum = 1 / (spectrum_mean + epsilon)
+                # print(inverse_spectrum.shape)
+                inverse_spectrum = inverse_spectrum.mean(dim=1) # Sum over frequencies → (B, Q)
+                # print(inverse_spectrum.shape)
+                train_loss = training_params.criterion(inverse_spectrum, doa)
 
-            filtered_stft = filtered_signal.view(B, F, T)
-            # print(filtered_stft.shape)
-            enhanced = torch.istft(
-                filtered_stft, 
-                n_fft=512, 
-                hop_length=256, 
-                win_length=512,
-                return_complex=False
-            )  # shape: (B, time)
-            # Compute training loss
-            # print(s.shape, filtered_signal.shape)
-            train_loss = training_params.criterion(enhanced, clean)
+                # ---- for sine wave data ----
+                # noisy_speech, R, clean, steering, doa = data
+                # x = noisy_speech.to(device)
+                # Rx = R.to(device).to(dtype=torch.float32)
+                # clean = clean.to(device)
+                # A = steering.to(device)
+                # doa = doa.to(device) # radians
+                # doa = doa.squeeze(1)
+                # # noisy shape: (B, C, T)
+                # # clean shape: (B, T)
+                # # steering shape: (B, C, Q)
+                # # R shape: (B, tau, 2C, C)
+                # # doa shape: (B, M)
+                # # print(noisy_stft.shape, R.shape, clean.shape, steering.shape)
+                # B, tau, CC, C = R.shape
+                # _, _, Q = steering.shape
+                # _, _, T = x.shape
+                # # x = Variable(x, requires_grad=False)
+                # Rx = Variable(Rx, requires_grad=True)
+                # # A = Variable(A, requires_grad=False)
+                # # clean = Variable(clean, requires_grad=True)
+                # doa = Variable(doa, requires_grad=True)
+                # inverse_spectrum, R = model(x, Rx, A)   # (B, Q)
+                # train_loss = training_params.criterion(inverse_spectrum, doa)
+                
             # Back-propagation stage
             try:
                 train_loss.backward()
@@ -468,8 +525,9 @@ def train_model(training_params: TrainingParams, model_name: str, checkpoint_pat
                         f"Epoch {epoch + 1}, Batch {j+1}, Train loss: {train_loss.item()}"
                     )   
             print("\n")
+            torch.cuda.empty_cache()
         # Average the epoch training loss
-        overall_train_loss = overall_train_loss / len(training_params.train_dataset)
+        overall_train_loss = overall_train_loss / data_crop
         loss_train_list.append(overall_train_loss)
         # Update schedular
         training_params.schedular.step()

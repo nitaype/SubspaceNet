@@ -25,6 +25,7 @@ import numpy as np
 import torch
 import random
 import scipy
+import warnings
 
 # Constants
 R2D = 180 / np.pi
@@ -244,39 +245,42 @@ def get_k_peaks(grid_size: int, k: int, prediction: torch.Tensor):
 
 
 # def gram_diagonal_overload(Kx: torch.Tensor, eps: float) -> torch.Tensor:
-def gram_diagonal_overload(Kx: torch.Tensor, eps: float, batch_size: int):
-    """Multiply a matrix Kx with its Hermitian conjecture (gram matrix),
-        and adds eps to the diagonal values of the matrix,
-        ensuring a Hermitian and PSD (Positive Semi-Definite) matrix.
+def gram_diagonal_overload(Kx: torch.Tensor, eps: float):
+    """
+    Multiply a matrix Kx with its Hermitian conjugate (gram matrix),
+    and add eps to the diagonal to ensure a Hermitian and PSD matrix.
 
     Args:
-    -----
-        Kx (torch.Tensor): Complex matrix with shape [BS, N, N],
-            where BS is the batch size and N is the matrix size.
-        eps (float): Constant multiplier added to each diagonal element.
-        batch_size(int): The number of batches
+        Kx (torch.Tensor): Complex matrix with shape [BS, N, N].
+        eps (float): Value added to each diagonal element.
 
     Returns:
-    --------
         torch.Tensor: Hermitian and PSD matrix with shape [BS, N, N].
-
     """
-    # Insuring Tensor input
+    # Ensure Tensor
     if not isinstance(Kx, torch.Tensor):
         Kx = torch.tensor(Kx)
+    Kx = Kx.to(device)
 
-    Kx_list = []
-    bs_kx = Kx
-    for iter in range(batch_size):
-        K = bs_kx[iter]
-        # Hermitian conjecture
-        Kx_garm = torch.matmul(torch.t(torch.conj(K)), K).to(device)
-        # Diagonal loading
-        eps_addition = (eps * torch.diag(torch.ones(Kx_garm.shape[0]))).to(device)
-        Rz = Kx_garm + eps_addition
-        Kx_list.append(Rz)
-    Kx_Out = torch.stack(Kx_list, dim=0)
+    # Compute Gram matrix
+    Kx_gram = torch.bmm(Kx.conj().transpose(1, 2), Kx)
+
+    # Add epsilon to diagonal
+    eps_addition = eps * torch.eye(Kx_gram.shape[-1], device=Kx.device).unsqueeze(0)  # (1, N, N)
+    Kx_Out = Kx_gram + eps_addition
+
+    # Check Hermitian: A^H = A
+    mask = (torch.abs(Kx_Out - Kx_Out.conj().transpose(1, 2)) > 1e-6)
+
+    # Fix batch_mask
+    batch_mask = mask.view(mask.shape[0], -1).any(dim=1)
+
+    if batch_mask.any():
+        warnings.warn(f"gram_diagonal_overload: {batch_mask.sum().item()} matrices in the batch aren't Hermitian; averaging R and R^H.")
+        Kx_Out[batch_mask] = 0.5 * (Kx_Out[batch_mask] + Kx_Out[batch_mask].conj().transpose(1, 2))
+
     return Kx_Out
+
 
 
 if __name__ == "__main__":
