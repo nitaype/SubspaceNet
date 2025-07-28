@@ -1,32 +1,10 @@
-"""
-Subspace-Net
+'''
 
-Details
-----------
-Name: training.py
-Authors: D. H. Shmuel
-Created: 01/10/21
-Edited: 17/03/23
+This is the code for the training loop. it has mainly two options:
+1. training and evaluating for speech enhancement task with mvdr.
+2. training and evaluating for doa estimation task with music spectrum loss.
 
-Purpose
-----------
-This code provides functions for training and simulating the Subspace-Net model.
-
-Classes:
-----------
-- TrainingParams: A class that encapsulates the training parameters for the model.
-
-Methods:
-----------
-- train: Function for training the model.
-- train_model: Function for performing the training process.
-- plot_learning_curve: Function for plotting the learning curve.
-- simulation_summary: Function for printing a summary of the simulation parameters.
-
-Attributes:
-----------
-None
-"""
+'''
 
 # Imports
 import torch
@@ -41,15 +19,13 @@ from datetime import datetime
 from torch.autograd import Variable
 from tqdm import tqdm
 from torch.optim import lr_scheduler
-from sklearn.model_selection import train_test_split
 from src.utils import *
 from src.criterions import *
 from src.system_model import SystemModel, SystemModelParams
-from src.models import SubspaceNet, DeepCNN, DeepAugmentedMUSIC, ModelGenerator
+from src.models import SubspaceNet, ModelGenerator
 from src.evaluation import evaluate_dnn_model
 import wandb
-from src.data_handler import create_autocorrelation_tensor
-from torch.optim.lr_scheduler import SequentialLR, LinearLR, StepLR, CosineAnnealingLR
+from torch.optim.lr_scheduler import SequentialLR, LinearLR, StepLR
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
@@ -139,15 +115,7 @@ class TrainingParams(object):
         if model is None:
             self.model_type = model_type
             # Assign the desired model for training
-            if self.model_type.startswith("DA-MUSIC"):
-                model = DeepAugmentedMUSIC(
-                    N=system_model.params.N,
-                    T=system_model.params.T,
-                    M=system_model.params.M,
-                )
-            elif self.model_type.startswith("DeepCNN"):
-                model = DeepCNN(N=system_model.params.N, grid_size=361)
-            elif self.model_type.startswith("SubspaceNet"):
+            if self.model_type.startswith("SubspaceNet"):
                 if not isinstance(tau, int):
                     raise ValueError(
                         "TrainingParams.set_model: tau parameter must be provided for SubspaceNet model"
@@ -225,14 +193,13 @@ class TrainingParams(object):
             )
         return self
 
-    def set_schedular(self, step_size: int, gamma: float, total_epochs: int, start_lr: float, warmup_epochs: int = 10, min_lr_factor: float = 0.1):
+    def set_schedular(self, step_size: int, gamma: float, total_epochs: int, start_lr: float, warmup_epochs: int = 10):
         """
-        Sets a composite scheduler: linear warmup then CosineAnnealingLR.
+        Sets a composite scheduler: linear warmup then stepLR.
         Args:
             total_epochs (int): Total number of training epochs.
             start_lr (float): Starting learning rate for warmup (e.g., 2e-6).
             warmup_epochs (int): Number of warmup epochs.
-            min_lr_factor (float): Minimum LR factor for cosine annealing (e.g., 0.1 means final LR = 0.1 * base LR).
         """
         self.warmup_epochs = warmup_epochs
         self.start_lr = start_lr
@@ -246,13 +213,6 @@ class TrainingParams(object):
             end_factor=1.0,
             total_iters=warmup_epochs
         )
-
-        # # Cosine annealing scheduler
-        # step_scheduler = CosineAnnealingLR(
-        #     self.optimizer,
-        #     T_max=total_epochs - warmup_epochs,
-        #     eta_min=self.learning_rate * min_lr_factor
-        # )
 
         step_scheduler = StepLR(
             self.optimizer,
@@ -279,13 +239,10 @@ class TrainingParams(object):
         self
         """
         # Define loss criterion
-        if self.model_type.startswith("DeepCNN"):
-            self.criterion = nn.BCELoss()
-        else:
-            if self.diff_method == "mvdr":
-                self.criterion = SISNRLoss()
-            if self.diff_method == "music":
-                self.criterion = Spectrum_Loss()
+        if self.diff_method == "mvdr":
+            self.criterion = SISNRLoss()
+        if self.diff_method == "music":
+            self.criterion = Spectrum_Loss()
         return self
 
     def set_training_dataset(self, train_dataset: list, valid_dataset: list):
@@ -301,10 +258,6 @@ class TrainingParams(object):
         self
         """
         print("Setting training dataset...")
-        # Divide into training and validation datasets
-        # train_dataset, valid_dataset = train_test_split(
-        #     train_dataset, test_size=0.1, shuffle=True
-        # )
         print("Training DataSet size", len(train_dataset))
         print("Validation DataSet size", len(valid_dataset))
         # Transform datasets into DataLoader objects
@@ -315,7 +268,6 @@ class TrainingParams(object):
             valid_dataset, batch_size=self.batch_size, shuffle=False, drop_last=False
         )
         return self
-
 
 def train(
     training_parameters: TrainingParams,
@@ -359,13 +311,7 @@ def train(
     )
     # Save models best weights
     torch.save(model.state_dict(), saving_path / Path(dt_string_for_save))
-    # Plot learning and validation loss curves
-    if plot_curves:
-        plot_learning_curve(
-            list(range(training_parameters.epochs)), loss_train_list, loss_valid_list
-        )
     return model, loss_train_list, loss_valid_list
-
 
 def train_model(training_params: TrainingParams, model_name: str, checkpoint_path=None):
     """
@@ -403,6 +349,7 @@ def train_model(training_params: TrainingParams, model_name: str, checkpoint_pat
         for j, data in enumerate(tqdm(training_params.train_dataset)):
             if j >= data_crop:
                 break
+            # ---- speech enhancement training loop ----
             if training_params.diff_method == "mvdr":
                 noisy_stft, R, clean, steering = data
                 noisy_stft = noisy_stft.to(device)
@@ -439,6 +386,7 @@ def train_model(training_params: TrainingParams, model_name: str, checkpoint_pat
                 # print(s.shape, filtered_signal.shape)
                 train_loss = training_params.criterion(enhanced, clean)
 
+            # ---- DOA estimation training loop ----
             if training_params.diff_method == "music":
                 noisy_stft, R, clean, steering, doa = data
                 noisy_stft = noisy_stft.to(device)
@@ -456,54 +404,21 @@ def train_model(training_params: TrainingParams, model_name: str, checkpoint_pat
                 B, tau, CC, C, F = R.shape
                 _, _, Q, _ = steering.shape
                 _, _, T, _ = noisy_stft.shape
+
                 # Reshape inputs for vectorized model execution
                 x = noisy_stft.permute(0, 3, 1, 2).reshape(B * F, C, T)             # (B*F, C, T)
                 A = steering.permute(0, 3, 1, 2).reshape(B * F, C, Q)               # (B*F, C, Q)
                 Rx = R.permute(0, 4, 1, 2, 3).reshape(B * F, tau, 2 * C, C)  # (B*F, tau, 2C, C)
-                # x = Variable(x, requires_grad=False)
+
                 Rx = Variable(Rx, requires_grad=True)
-                # A = Variable(A, requires_grad=False)
-                # clean = Variable(clean, requires_grad=True)
                 doa = Variable(doa, requires_grad=True)
+
                 inverse_spectrum, R = model(x, Rx, A)   # (B*F, Q)
                 inverse_spectrum = inverse_spectrum.view(B, F, -1)  # (B, F, Q)
-                # print(inverse_spectrum.shape)
-                epsilon = 0
-                # spectrum_per_f = 1 / (inverse_spectrum + epsilon)
-                # # print(spectrum_per_f.shape)
-                # spectrum_mean = spectrum_per_f.mean(dim=1)
-                # # print(spectrum_sum.shape)
-                # epsilon = 0
-                # inverse_spectrum = 1 / (spectrum_mean + epsilon)
-                # print(inverse_spectrum.shape)
+
                 inverse_spectrum = inverse_spectrum.mean(dim=1) # Sum over frequencies → (B, Q)
                 # print(inverse_spectrum.shape)
                 train_loss = training_params.criterion(inverse_spectrum, doa)
-
-                # ---- for sine wave data ----
-                # noisy_speech, R, clean, steering, doa = data
-                # x = noisy_speech.to(device)
-                # Rx = R.to(device).to(dtype=torch.float32)
-                # clean = clean.to(device)
-                # A = steering.to(device)
-                # doa = doa.to(device) # radians
-                # doa = doa.squeeze(1)
-                # # noisy shape: (B, C, T)
-                # # clean shape: (B, T)
-                # # steering shape: (B, C, Q)
-                # # R shape: (B, tau, 2C, C)
-                # # doa shape: (B, M)
-                # # print(noisy_stft.shape, R.shape, clean.shape, steering.shape)
-                # B, tau, CC, C = R.shape
-                # _, _, Q = steering.shape
-                # _, _, T = x.shape
-                # # x = Variable(x, requires_grad=False)
-                # Rx = Variable(Rx, requires_grad=True)
-                # # A = Variable(A, requires_grad=False)
-                # # clean = Variable(clean, requires_grad=True)
-                # doa = Variable(doa, requires_grad=True)
-                # inverse_spectrum, R = model(x, Rx, A)   # (B, Q)
-                # train_loss = training_params.criterion(inverse_spectrum, doa)
                 
             # Back-propagation stage
             try:
@@ -515,15 +430,11 @@ def train_model(training_params: TrainingParams, model_name: str, checkpoint_pat
             # reset gradients
             model.zero_grad()
             # add batch loss to overall epoch loss
-            if training_params.model_type.startswith("DeepCNN"):
-                # BCE is averaged
-                overall_train_loss += train_loss.item() * len(data[0])
-            else:
-                overall_train_loss += train_loss.item()
-                if j % 30 == 29: # print every 100 iterations
-                    print(
-                        f"Epoch {epoch + 1}, Batch {j+1}, Train loss: {train_loss.item()}"
-                    )   
+            overall_train_loss += train_loss.item()
+            if j % 30 == 29: # print every 100 iterations
+                print(
+                    f"Epoch {epoch + 1}, Batch {j+1}, Train loss: {train_loss.item()}"
+                )   
             print("\n")
             torch.cuda.empty_cache()
         # Average the epoch training loss
@@ -574,26 +485,6 @@ def train_model(training_params: TrainingParams, model_name: str, checkpoint_pat
     torch.save(model.state_dict(), checkpoint_path / model_name)
     return model, loss_train_list, loss_valid_list
 
-
-def plot_learning_curve(epoch_list, train_loss: list, validation_loss: list):
-    """
-    Plot the learning curve.
-
-    Args:
-    -----
-        epoch_list (list): List of epochs.
-        train_loss (list): List of training losses per epoch.
-        validation_loss (list): List of validation losses per epoch.
-    """
-    plt.title("Learning Curve: Loss per Epoch")
-    plt.plot(epoch_list, train_loss, label="Train")
-    plt.plot(epoch_list, validation_loss, label="Validation")
-    plt.xlabel("Epochs")
-    plt.ylabel("Loss")
-    plt.legend(loc="best")
-    plt.show()
-
-
 def simulation_summary(
     system_model_params: SystemModelParams,
     model_type: str,
@@ -609,12 +500,8 @@ def simulation_summary(
         M (int): The number of sources.
         N (int): The number of sensors.
         T (float): The number of observations.
-        SNR (int): The signal-to-noise ratio.
         signal_type (str): The signal_type of the signals.
         mode (str): The nature of the sources.
-        eta (float): The spacing deviation.
-        bias (float): Value of bias deviation from nominal spacing.
-        geo_noise_var (float): The geometry noise variance.
         parameters (TrainingParams): instance of the training parameters object
         phase (str, optional): The phase of the simulation. Defaults to "training", optional: "evaluation".
         tau (int, optional): The number of lags for auto-correlation (relevant only for SubspaceNet model).
@@ -627,12 +514,6 @@ def simulation_summary(
     print(f"Number of sensors = {system_model_params.N}")
     print(f"signal_type = {system_model_params.signal_type}")
     print(f"Observations = {system_model_params.T}")
-    print(
-        f"SNR = {system_model_params.snr}, {system_model_params.signal_nature} sources"
-    )
-    print(f"Spacing deviation (eta) = {system_model_params.eta}")
-    print(f"Bias spacing deviation (eta) = {system_model_params.bias}")
-    print(f"Geometry noise variance = {system_model_params.sv_noise_var}")
     print("Simulation parameters:")
     print(f"Model: {model_type}")
     if model_type.startswith("SubspaceNet"):
@@ -647,17 +528,3 @@ def simulation_summary(
         print(f"Weight decay = {parameters.weight_decay}")
         print(f"Gamma Value = {parameters.gamma}")
         print(f"Step Value = {parameters.step_size}")
-
-
-def get_simulation_filename(
-    system_model_params: SystemModelParams, model_config: ModelGenerator
-):
-    return (
-        f"{model_config.model_type}_M={system_model_params.M}_"
-        + f"T={system_model_params.T}_SNR_{system_model_params.snr}_"
-        + f"tau={model_config.tau}_{system_model_params.signal_type}_"
-        + f"diff_method={model_config.diff_method}_"
-        + f"{system_model_params.signal_nature}_eta={system_model_params.eta}_"
-        + f"bias={system_model_params.bias}_"
-        + f"sv_noise={system_model_params.sv_noise_var}"
-    )
