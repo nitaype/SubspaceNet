@@ -37,6 +37,7 @@ from src.models import ModelGenerator
 import wandb
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 wandb.login(key="d55bad0e0b8a03b9bdfa4beeacf508cd29e1e398")
+print("hello")
 
 # Initialization
 warnings.simplefilter("ignore")
@@ -322,4 +323,4 @@ if __name__ == "__main__":
     plt.show()
     print("end")
 
-#runai-cmd --name test2 -g 1 --cpu-limit 32 -- "conda activate SubspaceNetEnv && python /gpfs0/bgu-br/users/tatarjit/model-based-nir/main.py"
+#runai-cmd --name test -g 1 --cpu-limit 32 -- "conda activate SubspaceNetEnv && python /gpfs0/bgu-br/users/tatarjit/model-based-nir/main.py"
